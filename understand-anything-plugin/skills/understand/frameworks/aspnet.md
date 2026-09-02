@@ -23,10 +23,18 @@
 ### Edge Patterns to Look For
 
 - Controller actions that return a Razor view depend on that view. Respect Area and web-project boundaries; never connect same-named controllers or views across them.
+- Razor partial tags and literal `Html.PartialAsync` / `Html.RenderPartialAsync` calls create file-to-file `view_partial` / `depends_on` relationships through the same Area-aware view resolver as action views.
+- An explicit literal Razor `Layout` creates a file-to-file `view_layout` / `depends_on` relationship. A `_ViewStart.cshtml` records only its own layout edge; do not fan that edge out to every descendant view.
 - Razor `@model` and `@inject` directives create `depends_on` relationships only when the referenced project type resolves uniquely.
+- A Roslyn-confirmed `RedirectToAction` or `RedirectToActionPermanent` invocation creates an `action_redirect` / `routes` relationship when its literal action, controller, and Area resolve to exactly one action. Never infer redirects from syntax alone.
+- Top-level `Program.cs` registrations create one edge from `Program.cs` to the uniquely resolved implementation file: global filters use `global_filter_registration` / `configures`, middleware uses `middleware_registration` / `middleware`, and DI uses `di_registration` / `configures`. Keep scope, service, implementation, and lifetime in evidence; never fan filters out to controllers or create service-to-implementation registration edges.
 - Attribute route endpoints route to their uniquely identified controller action. Treat `[area]`, `[controller]`, and `[action]` as effective-value tokens.
 - Literal Anchor Tag Helper values (`asp-area`, `asp-controller`, `asp-action`) route a Razor view to a uniquely resolved action. Skip dynamic values.
 - Use deterministic C# dependency edges when available; do not infer a concrete implementation from naming alone.
+
+### Provider Layering Boundary
+
+The ASP.NET provider owns framework conventions only. Constructor injection from primary or normal constructors and instance fields, plus `implements` / `inherits` relationships, belong to the common deterministic C# layer. Do not reproduce those relationships in this provider. Prefer no edge when a view, action, or registration type is unresolved or ambiguous.
 
 ### Architectural Layers
 
