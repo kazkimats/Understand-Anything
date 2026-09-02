@@ -20,6 +20,7 @@ export {
   runFrameworkRelationProviders,
 } from "./registry.js";
 export { aspnetProvider } from "./providers/index.js";
+export * from "./csharp-semantic/index.js";
 export type {
   FrameworkProviderRunStats,
   FrameworkProviderRunResult,

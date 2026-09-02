@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <RoslynToolPath>$(MSBuildToolsPath)/DotnetTools/dotnet-format</RoslynToolPath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="Microsoft.Build.Locator" HintPath="$(RoslynToolPath)/Microsoft.Build.Locator.dll" />
+    <Reference Include="Microsoft.CodeAnalysis" HintPath="$(RoslynToolPath)/Microsoft.CodeAnalysis.dll" />
+    <Reference Include="Microsoft.CodeAnalysis.CSharp" HintPath="$(RoslynToolPath)/Microsoft.CodeAnalysis.CSharp.dll" />
+    <Reference Include="Microsoft.CodeAnalysis.Workspaces" HintPath="$(RoslynToolPath)/Microsoft.CodeAnalysis.Workspaces.dll" />
+    <Reference Include="Microsoft.CodeAnalysis.CSharp.Workspaces" HintPath="$(RoslynToolPath)/Microsoft.CodeAnalysis.CSharp.Workspaces.dll" />
+    <Reference Include="Microsoft.CodeAnalysis.Workspaces.MSBuild" HintPath="$(RoslynToolPath)/Microsoft.CodeAnalysis.Workspaces.MSBuild.dll" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="$(RoslynToolPath)/*.dll" CopyToOutputDirectory="PreserveNewest" Link="%(Filename)%(Extension)" />
+    <Content Include="$(RoslynToolPath)/BuildHost-netcore/**" CopyToOutputDirectory="PreserveNewest" Link="BuildHost-netcore/%(RecursiveDir)%(Filename)%(Extension)" />
+  </ItemGroup>
+</Project>
