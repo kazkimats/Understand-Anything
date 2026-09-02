@@ -1,12 +1,17 @@
 import { describe, expect, it } from "vitest";
 import { aspnetConfig } from "../../languages/frameworks/aspnet.js";
+import type { CSharpSemanticFacts } from "../csharp-semantic/facts.js";
 import type { FrameworkRelationContext } from "../types.js";
 import { aspnetProvider } from "./aspnet.js";
 
-function context(files: Record<string, string>): FrameworkRelationContext {
+function context(
+  files: Record<string, string>,
+  semanticFacts?: CSharpSemanticFacts,
+): FrameworkRelationContext {
   return {
     projectRoot: "/fixture",
     framework: aspnetConfig,
+    semanticFacts,
     files: Object.entries(files).map(([path, content]) => ({
       path,
       language: path.endsWith(".cs") ? "csharp"
@@ -22,6 +27,80 @@ function context(files: Record<string, string>): FrameworkRelationContext {
 }
 
 const webProject = '<Project Sdk="Microsoft.NET.Sdk.Web" />\n';
+
+const semanticControllerPath = "Web/Controllers/HomeController.cs";
+const semanticControllerType = "Web.HomeController";
+
+function facts(options: {
+  compilationSucceeded?: boolean;
+  referencesResolved?: boolean;
+  includeType?: boolean;
+  baseTypes?: string[];
+  typeAttributes?: Array<{ symbolName: string; arguments: string[] }>;
+  methodAttributes?: Array<{ symbolName: string; arguments: string[] }>;
+  invocation?: {
+    arguments?: string[];
+    targetKind?: "instance-method" | "static" | "extension" | "unresolvable";
+    resolved?: boolean;
+    symbolName?: string;
+  } | null;
+} = {}): CSharpSemanticFacts {
+  const includeType = options.includeType ?? true;
+  return {
+    schemaVersion: 1,
+    projects: [{
+      projectFile: "Web/Web.csproj",
+      compilationSucceeded: options.compilationSucceeded ?? true,
+      targetFrameworks: ["net8.0"],
+      references: ["Microsoft.AspNetCore.Mvc.Core"],
+      referencesResolved: options.referencesResolved ?? true,
+    }],
+    types: includeType ? [{
+      projectFile: "Web/Web.csproj",
+      symbolName: semanticControllerType,
+      kind: "class",
+      filePath: semanticControllerPath,
+      lineRange: [2, 4],
+      baseTypes: (options.baseTypes ?? ["Microsoft.AspNetCore.Mvc.Controller"])
+        .map((symbolName) => ({ symbolName, kind: "class", resolvedOutsideProject: true })),
+      attributes: options.typeAttributes ?? [],
+    }] : [],
+    methods: includeType ? [{
+      projectFile: "Web/Web.csproj",
+      containingType: semanticControllerType,
+      methodName: "Index",
+      kind: "method",
+      filePath: semanticControllerPath,
+      lineRange: [3, 3],
+      modifiers: ["public", "instance"],
+      isConstructor: false,
+      attributes: options.methodAttributes ?? [],
+    }] : [],
+    invocations: includeType && options.invocation !== null ? [{
+      projectFile: "Web/Web.csproj",
+      containingType: semanticControllerType,
+      containingMethod: "Index",
+      invocationName: "View",
+      symbolName: options.invocation?.symbolName
+        ?? "Microsoft.AspNetCore.Mvc.Controller.View()",
+      filePath: semanticControllerPath,
+      lineRange: [3, 3],
+      arguments: options.invocation?.arguments ?? [],
+      targetKind: options.invocation?.targetKind ?? "instance-method",
+      resolved: options.invocation?.resolved ?? true,
+    }] : [],
+    diagnostics: [],
+    warnings: [],
+  };
+}
+
+function semanticFiles(source: string, views: string[]): Record<string, string> {
+  return {
+    "Web/Web.csproj": webProject,
+    [semanticControllerPath]: source,
+    ...Object.fromEntries(views.map((path) => [path, `<h1>${path}</h1>\n`])),
+  };
+}
 
 describe("aspnetProvider MVC conventions", () => {
   it("isolates Areas and web projects while resolving action views", async () => {
@@ -232,5 +311,202 @@ app.MapAreaControllerRoute(name: "areas", areaName: "Admin", pattern: "{area:exi
     expect(result.stats.conventionalRoutesObserved).toBe(2);
     expect(result.stats.tagHelperLinksResolved).toBe(2);
     expect(routeRelations).toHaveLength(5);
+  });
+});
+
+describe("aspnetProvider Roslyn semantic gating", () => {
+  it("uses confirmed controller, Area, ActionName, and View facts", async () => {
+    const files = semanticFiles(
+      `namespace Web;
+[My.Area("Wrong")] public class HomeController : Controller {
+  [My.ActionName("Wrong")] public IActionResult Index() { return View(); }
+}`,
+      ["Web/Areas/Admin/Views/Home/List.cshtml", "Web/Areas/Wrong/Views/Home/Wrong.cshtml"],
+    );
+    const semanticFacts = facts({
+      typeAttributes: [{
+        symbolName: "Microsoft.AspNetCore.Mvc.AreaAttribute",
+        arguments: ["Admin"],
+      }],
+      methodAttributes: [{
+        symbolName: "Microsoft.AspNetCore.Mvc.ActionNameAttribute",
+        arguments: ["List"],
+      }],
+    });
+
+    const result = await aspnetProvider.analyze(context(files, semanticFacts));
+
+    expect(result.fileDependencies).toContainEqual(expect.objectContaining({
+      sourcePath: semanticControllerPath,
+      targetPath: "Web/Areas/Admin/Views/Home/List.cshtml",
+      kind: "action_view",
+    }));
+    expect(result.stats.roslynConfirmedControllers).toBe(1);
+    expect(result.stats.roslynDeniedControllers).toBe(0);
+    expect(result.stats.roslynFallbackDecisions).toBe(0);
+  });
+
+  it("lets a semantic controller denial beat the Controller suffix", async () => {
+    const files = semanticFiles(
+      `namespace Web;
+public class HomeController {
+  public object Index() { return View(); }
+}`,
+      ["Web/Views/Home/Index.cshtml"],
+    );
+
+    const result = await aspnetProvider.analyze(context(files, facts({ baseTypes: ["System.Object"] })));
+
+    expect(result.fileDependencies).toEqual([]);
+    expect(result.stats.controllersScanned).toBe(0);
+    expect(result.stats.roslynDeniedControllers).toBe(1);
+  });
+
+  it("falls back to syntax when Roslyn did not observe the class", async () => {
+    const files = semanticFiles(
+      `namespace Web;
+public class HomeController : Controller {
+  public IActionResult Index() { return View(); }
+}`,
+      ["Web/Views/Home/Index.cshtml"],
+    );
+
+    const result = await aspnetProvider.analyze(context(files, facts({ includeType: false })));
+
+    expect(result.fileDependencies).toContainEqual(expect.objectContaining({
+      targetPath: "Web/Views/Home/Index.cshtml",
+    }));
+    expect(result.stats.roslynFallbackDecisions).toBeGreaterThan(0);
+  });
+
+  it("ignores a custom AreaAttribute instead of using syntax-name matching", async () => {
+    const files = semanticFiles(
+      `namespace Web;
+[My.Area("Admin")] public class HomeController : Controller {
+  public IActionResult Index() { return View(); }
+}`,
+      ["Web/Views/Home/Index.cshtml", "Web/Areas/Admin/Views/Home/Index.cshtml"],
+    );
+    const semanticFacts = facts({
+      typeAttributes: [{ symbolName: "My.AreaAttribute", arguments: ["Admin"] }],
+    });
+
+    const result = await aspnetProvider.analyze(context(files, semanticFacts));
+    const targets = result.fileDependencies.map((dependency) => dependency.targetPath);
+
+    expect(targets).toContain("Web/Views/Home/Index.cshtml");
+    expect(targets).not.toContain("Web/Areas/Admin/Views/Home/Index.cshtml");
+  });
+
+  it("excludes an action with a resolved MVC NonActionAttribute", async () => {
+    const files = semanticFiles(
+      `namespace Web;
+public class HomeController : Controller {
+  [My.NonAction] public IActionResult Index() { return View(); }
+}`,
+      ["Web/Views/Home/Index.cshtml"],
+    );
+    const semanticFacts = facts({
+      methodAttributes: [{
+        symbolName: "Microsoft.AspNetCore.Mvc.NonActionAttribute",
+        arguments: [],
+      }],
+    });
+
+    const result = await aspnetProvider.analyze(context(files, semanticFacts));
+
+    expect(result.stats.actionsScanned).toBe(0);
+    expect(result.fileDependencies).toEqual([]);
+  });
+
+  it("rejects a resolved extension View invocation", async () => {
+    const files = semanticFiles(
+      `namespace Web;
+public class HomeController : Controller {
+  public IActionResult Index() { return View(); }
+}`,
+      ["Web/Views/Home/Index.cshtml"],
+    );
+    const semanticFacts = facts({
+      invocation: {
+        targetKind: "extension",
+        symbolName: "Web.ViewExtensions.View(Web.HomeController)",
+      },
+    });
+
+    const result = await aspnetProvider.analyze(context(files, semanticFacts));
+
+    expect(result.stats.actionViewCandidates).toBe(1);
+    expect(result.fileDependencies).toEqual([]);
+  });
+
+  it("falls back for an unresolved View invocation", async () => {
+    const files = semanticFiles(
+      `namespace Web;
+public class HomeController : Controller {
+  public IActionResult Index() { return View(); }
+}`,
+      ["Web/Views/Home/Index.cshtml"],
+    );
+    const semanticFacts = facts({
+      invocation: { resolved: false, targetKind: "unresolvable", symbolName: "" },
+    });
+
+    const result = await aspnetProvider.analyze(context(files, semanticFacts));
+
+    expect(result.fileDependencies).toContainEqual(expect.objectContaining({
+      targetPath: "Web/Views/Home/Index.cshtml",
+    }));
+    expect(result.stats.roslynFallbackDecisions).toBe(1);
+  });
+
+  it("uses the first string literal from a confirmed View overload", async () => {
+    const files = semanticFiles(
+      `namespace Web;
+public class HomeController : Controller {
+  public IActionResult Index() { return View("Detail", model); }
+}`,
+      ["Web/Views/Home/Detail.cshtml"],
+    );
+    const semanticFacts = facts({
+      invocation: {
+        arguments: ['"Detail"', "model"],
+        symbolName: "Microsoft.AspNetCore.Mvc.Controller.View(System.String,System.Object)",
+      },
+    });
+
+    const result = await aspnetProvider.analyze(context(files, semanticFacts));
+
+    expect(result.fileDependencies).toContainEqual(expect.objectContaining({
+      targetPath: "Web/Views/Home/Detail.cshtml",
+    }));
+  });
+
+  it("falls back for the whole project when its semantic compilation is incomplete", async () => {
+    const files = semanticFiles(
+      `namespace Web;
+public class HomeController : Controller {
+  public IActionResult Index() { return View(); }
+}`,
+      ["Web/Views/Home/Index.cshtml"],
+    );
+    const semanticFacts = facts({
+      compilationSucceeded: false,
+      referencesResolved: false,
+      baseTypes: ["System.Object"],
+      invocation: {
+        targetKind: "extension",
+        symbolName: "Web.ViewExtensions.View(Web.HomeController)",
+      },
+    });
+
+    const result = await aspnetProvider.analyze(context(files, semanticFacts));
+
+    expect(result.fileDependencies).toContainEqual(expect.objectContaining({
+      targetPath: "Web/Views/Home/Index.cshtml",
+    }));
+    expect(result.stats.roslynConfirmedControllers).toBe(0);
+    expect(result.stats.roslynDeniedControllers).toBe(0);
+    expect(result.stats.roslynFallbackDecisions).toBeGreaterThan(0);
   });
 });
