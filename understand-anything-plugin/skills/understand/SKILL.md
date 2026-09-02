@@ -268,6 +268,17 @@ After the subagent completes, read `$UA_DIR/intermediate/scan-result.json` to ge
 Store `importMap` in memory as `$IMPORT_MAP` for use in Phase 2 batch construction.
 Store the file list as `$FILE_LIST` with `fileCategory` metadata for use in Phase 2 batch construction.
 
+Augment the LLM-detected frameworks with deterministic manifest detection through
+the shared framework registry:
+
+```bash
+node "<SKILL_DIR>/detect-frameworks.mjs" "$PROJECT_ROOT"
+```
+
+Re-read `$UA_DIR/intermediate/scan-result.json` after this command and use its
+canonical, deduplicated `frameworks` array for all later phases. Capture any
+`Warning:` line in `$PHASE_WARNINGS`. A non-zero exit is a hard Phase 1 failure.
+
 **Gate check:** If >100 files, inform the user and suggest scoping with a subdirectory argument. Proceed only if user confirms or add guidance that this may take a while.
 
 If the scan result includes `filteredByIgnore > 0`, report:
