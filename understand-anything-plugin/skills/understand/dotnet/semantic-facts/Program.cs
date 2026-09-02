@@ -89,13 +89,25 @@ internal static class Program
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
             var skippedInvocations = 0;
+            var styleDiagnosticCounts = new Dictionary<string, int>(StringComparer.Ordinal);
             foreach (var relativeProjectFile in input.ProjectFiles.Distinct(StringComparer.OrdinalIgnoreCase))
             {
                 skippedInvocations += await AnalyzeProject(
                     projectRoot,
                     relativeProjectFile,
                     selectedFiles,
-                    output);
+                    output,
+                    styleDiagnosticCounts);
+            }
+
+            if (styleDiagnosticCounts.Count > 0)
+            {
+                var totalStyleDiagnostics = styleDiagnosticCounts.Values.Sum();
+                var countsById = string.Join(", ", styleDiagnosticCounts
+                    .OrderBy(pair => pair.Key, StringComparer.Ordinal)
+                    .Select(pair => $"{pair.Key}: {pair.Value}"));
+                output.Warnings.Add(
+                    $"{totalStyleDiagnostics} style diagnostics were treated as non-fatal ({countsById})");
             }
 
             if (skippedInvocations > 0)
@@ -118,7 +130,8 @@ internal static class Program
         string projectRoot,
         string relativeProjectFile,
         HashSet<string> selectedFiles,
-        Output output)
+        Output output,
+        Dictionary<string, int> styleDiagnosticCounts)
     {
         var projectFile = NormalizeRelative(relativeProjectFile);
         var fullProjectFile = Path.GetFullPath(Path.Combine(projectRoot, projectFile));
@@ -137,10 +150,18 @@ internal static class Program
                 throw new InvalidOperationException("Roslyn did not produce a compilation");
             }
 
-            var errors = compilation.GetDiagnostics()
+            var errorDiagnostics = compilation.GetDiagnostics()
                 .Where(diagnostic => diagnostic.Severity == DiagnosticSeverity.Error)
                 .ToArray();
-            var referencesResolved = !errors.Any(IsReferenceDiagnostic)
+            foreach (var diagnostic in errorDiagnostics.Where(IsStyleDiagnostic))
+            {
+                styleDiagnosticCounts[diagnostic.Id] =
+                    styleDiagnosticCounts.GetValueOrDefault(diagnostic.Id) + 1;
+            }
+            var errors = errorDiagnostics
+                .Where(diagnostic => !IsStyleDiagnostic(diagnostic))
+                .ToArray();
+            var referencesResolved = !errorDiagnostics.Any(IsReferenceDiagnostic)
                 && !workspaceWarnings.Any(IsReferenceWarning);
             output.Projects.Add(new ProjectFacts(
                 projectFile,
@@ -378,6 +399,10 @@ internal static class Program
 
     private static bool IsReferenceDiagnostic(Diagnostic diagnostic) =>
         diagnostic.Id is "CS0006" or "CS0012" or "CS0234" or "CS0246";
+
+    // Keep this allowlist limited to informational style rules that cannot affect symbol resolution.
+    private static bool IsStyleDiagnostic(Diagnostic diagnostic) =>
+        diagnostic.Id is "CS8019" or "IDE0005";
 
     private static bool IsReferenceWarning(string warning) =>
         warning.Contains("reference", StringComparison.OrdinalIgnoreCase)
