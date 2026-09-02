@@ -416,6 +416,8 @@ function viewAreaAndController(path: string, root: string): { area: string | nul
   const relative = relativeToRoot(path, root);
   const areaMatch = relative.match(/^Areas\/([^/]+)\/Views\/([^/]+)\//i);
   if (areaMatch) return { area: areaMatch[1], controller: areaMatch[2] };
+  const areaRootMatch = relative.match(/^Areas\/([^/]+)\/Views\/[^/]+$/i);
+  if (areaRootMatch) return { area: areaRootMatch[1], controller: null };
   const rootMatch = relative.match(/^Views\/([^/]+)\//i);
   return { area: null, controller: rootMatch?.[1] ?? null };
 }

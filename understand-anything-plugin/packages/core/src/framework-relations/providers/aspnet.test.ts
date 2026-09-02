@@ -254,6 +254,81 @@ public class HiddenController : Controller {
 });
 
 describe("aspnetProvider Razor and routing conventions", () => {
+  it("resolves Area-aware partials and explicit layouts without ViewStart fan-out", async () => {
+    const files = {
+      "Web/Web.csproj": webProject,
+      "Web/Areas/Admin/Views/Home/Index.cshtml": `@{ Layout = "_AreaLayout"; }
+<partial name="_AreaPartial" model="Model" />
+<partial name='_SinglePartial' />
+@await Html.PartialAsync("_SharedPartial", Model)
+@await Html.RenderPartialAsync("_RootPartial", Model)
+<partial name="@Model.PartialName" />
+@await Html.PartialAsync(partialName, Model)
+@await Html.RenderPartialAsync(partialName, Model)`,
+      "Web/Areas/Admin/Views/Home/Variable.cshtml": `@{ Layout = layoutName; }
+@{ Layout = null; }`,
+      "Web/Areas/Admin/Views/Home/_AreaPartial.cshtml": "area controller\n",
+      "Web/Areas/Admin/Views/Home/_SinglePartial.cshtml": "single quoted\n",
+      "Web/Areas/Admin/Views/Shared/_SharedPartial.cshtml": "area shared\n",
+      "Web/Areas/Admin/Views/Shared/_AreaLayout.cshtml": "area layout\n",
+      "Web/Areas/Admin/Views/_ViewStart.cshtml": `@{ Layout = "_AreaLayout"; }`,
+      "Web/Views/Shared/_AreaPartial.cshtml": "must lose to Area controller\n",
+      "Web/Views/Shared/_SharedPartial.cshtml": "must lose to Area shared\n",
+      "Web/Views/Shared/_RootPartial.cshtml": "root fallback\n",
+    };
+
+    const result = await aspnetProvider.analyze(context(files));
+    const partials = result.fileDependencies.filter((dependency) =>
+      dependency.kind === "view_partial");
+    const layouts = result.relations.filter((relation) => relation.kind === "view_layout");
+
+    expect(partials.map((dependency) => dependency.targetPath)).toEqual([
+      "Web/Areas/Admin/Views/Home/_AreaPartial.cshtml",
+      "Web/Areas/Admin/Views/Home/_SinglePartial.cshtml",
+      "Web/Areas/Admin/Views/Shared/_SharedPartial.cshtml",
+      "Web/Views/Shared/_RootPartial.cshtml",
+    ]);
+    expect(partials.every((dependency) =>
+      dependency.sourcePath === "Web/Areas/Admin/Views/Home/Index.cshtml")).toBe(true);
+    expect(layouts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        source: { nodeId: "file:Web/Areas/Admin/Views/Home/Index.cshtml" },
+        target: { nodeId: "file:Web/Areas/Admin/Views/Shared/_AreaLayout.cshtml" },
+        edgeType: "depends_on",
+      }),
+      expect.objectContaining({
+        source: { nodeId: "file:Web/Areas/Admin/Views/_ViewStart.cshtml" },
+        target: { nodeId: "file:Web/Areas/Admin/Views/Shared/_AreaLayout.cshtml" },
+        edgeType: "depends_on",
+      }),
+    ]));
+    expect(layouts).toHaveLength(2);
+    expect(layouts.some((relation) =>
+      "nodeId" in relation.source
+      && relation.source.nodeId.endsWith("/Variable.cshtml"))).toBe(false);
+    expect(result.stats.viewPartialsResolved).toBe(4);
+    expect(result.stats.viewPartialsSkipped).toBe(3);
+    expect(result.stats.viewLayoutsResolved).toBe(2);
+    expect(result.stats.viewLayoutsSkipped).toBe(2);
+  });
+
+  it("does not create action redirects without usable semantic facts", async () => {
+    const files = {
+      "Web/Web.csproj": webProject,
+      "Web/Controllers/HomeController.cs": `public class HomeController : Controller {
+  public IActionResult Index() => View();
+  public IActionResult Go() => RedirectToAction("Index");
+}`,
+      "Web/Views/Home/Index.cshtml": "Index\n",
+    };
+
+    const result = await aspnetProvider.analyze(context(files));
+
+    expect(result.relations.filter((relation) => relation.kind === "action_redirect")).toEqual([]);
+    expect(result.fileDependencies.filter((dependency) =>
+      dependency.kind === "action_redirect")).toEqual([]);
+  });
+
   it("resolves Razor model/inject types and skips ambiguous or cross-project types", async () => {
     const files = {
       "Web/Web.csproj": webProject,

@@ -127,7 +127,204 @@ public class HomeController : Controller
   return { root, intermediate };
 }
 
+function createRoslynFrameworkRelationsFixture() {
+  const root = mkdtempSync(join(tmpdir(), 'ua-framework-relations-'));
+  const intermediate = join(root, '.ua', 'intermediate');
+  mkdirSync(join(root, 'Web', 'Controllers'), { recursive: true });
+  mkdirSync(join(root, 'Web', 'Areas', 'Admin', 'Controllers'), { recursive: true });
+  mkdirSync(join(root, 'Web', 'Services'), { recursive: true });
+  mkdirSync(join(root, 'Web', 'Filters'), { recursive: true });
+  mkdirSync(join(root, 'Web', 'Middleware'), { recursive: true });
+  mkdirSync(intermediate, { recursive: true });
+  const files = [
+    { path: 'Web/Web.csproj', language: 'csproj', fileCategory: 'config' },
+    { path: 'Web/Controllers/HomeController.cs', language: 'csharp', fileCategory: 'code' },
+    { path: 'Web/Controllers/OtherController.cs', language: 'csharp', fileCategory: 'code' },
+    {
+      path: 'Web/Areas/Admin/Controllers/HomeController.cs',
+      language: 'csharp',
+      fileCategory: 'code',
+    },
+    { path: 'Web/Program.cs', language: 'csharp', fileCategory: 'code' },
+    { path: 'Web/Services/Foo.cs', language: 'csharp', fileCategory: 'code' },
+    { path: 'Web/Filters/GlobalFilter.cs', language: 'csharp', fileCategory: 'code' },
+    { path: 'Web/Middleware/ExceptionMiddleware.cs', language: 'csharp', fileCategory: 'code' },
+  ];
+  writeFileSync(join(root, files[0].path), `<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup>
+</Project>
+`);
+  writeFileSync(join(root, files[1].path), `using Microsoft.AspNetCore.Mvc;
+namespace Web.Controllers;
+public class HomeController : Controller
+{
+    public IActionResult Index() => View();
+    public IActionResult One() => RedirectToAction("Index");
+    public IActionResult Two() => RedirectToAction("Index", "Other");
+    public IActionResult Three() => RedirectToAction("Index", "Home", new { area = "Admin" });
+    public IActionResult RouteValues() => RedirectToAction("Index", new { id = 1 });
+    public IActionResult Dynamic(string actionName) => RedirectToAction(actionName);
+    public IActionResult Permanent() => RedirectToActionPermanent("Index");
+}
+`);
+  writeFileSync(join(root, files[2].path), `using Microsoft.AspNetCore.Mvc;
+namespace Web.Controllers;
+public class OtherController : Controller
+{
+    public IActionResult Index() => View();
+}
+`);
+  writeFileSync(join(root, files[3].path), `using Microsoft.AspNetCore.Mvc;
+namespace Web.Areas.Admin.Controllers;
+[Area("Admin")]
+public class HomeController : Controller
+{
+    public IActionResult Index() => View();
+}
+`);
+  writeFileSync(join(root, files[4].path), `using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc.Filters;
+using Microsoft.Extensions.DependencyInjection;
+using Web;
+
+var builder = WebApplication.CreateBuilder(args);
+builder.Services.AddControllersWithViews(options => options.Filters.Add<GlobalFilter>());
+builder.Services.AddScoped<IFoo, FooImpl>();
+builder.Services.AddScoped<IFoo>(sp => new FooImpl());
+var app = builder.Build();
+app.UseMiddleware<ExceptionMiddleware>();
+app.Run();
+`);
+  writeFileSync(join(root, files[5].path), `namespace Web;
+public interface IFoo { }
+public sealed class FooImpl : IFoo { }
+`);
+  writeFileSync(join(root, files[6].path), `using Microsoft.AspNetCore.Mvc.Filters;
+namespace Web;
+public sealed class GlobalFilter : IActionFilter
+{
+    public void OnActionExecuting(ActionExecutingContext context) { }
+    public void OnActionExecuted(ActionExecutedContext context) { }
+}
+`);
+  writeFileSync(join(root, files[7].path), `using Microsoft.AspNetCore.Http;
+using System.Threading.Tasks;
+namespace Web;
+public sealed class ExceptionMiddleware
+{
+    private readonly RequestDelegate next;
+    public ExceptionMiddleware(RequestDelegate next) => this.next = next;
+    public Task InvokeAsync(HttpContext context) => next(context);
+}
+`);
+  writeFileSync(join(intermediate, 'scan-result.json'), JSON.stringify({
+    frameworks: ['aspnet'],
+    files,
+    importMap: {},
+  }));
+  return { root, intermediate, files };
+}
+
 describe('run-framework-relations.mjs', () => {
+  it.skipIf(!hasDotnet8)('resolves redirects and top-level registrations from real Roslyn facts', async () => {
+    const fixture = createRoslynFrameworkRelationsFixture();
+    try {
+      const { run } = await import(pathToFileURL(RUNNER).href);
+      await run(fixture.root, { enableCSharpSemanticFacts: true });
+      const facts = JSON.parse(readFileSync(
+        join(fixture.intermediate, 'ua-semantic-facts-csharp.json'),
+        'utf-8',
+      ));
+      const artifact = JSON.parse(readFileSync(
+        join(fixture.intermediate, 'ua-framework-relations-aspnet.json'),
+        'utf-8',
+      ));
+      const symbols = facts.invocations
+        .filter((invocation) => invocation.invocationName.startsWith('RedirectToAction'))
+        .map((invocation) => invocation.symbolName);
+      const topLevel = facts.invocations.filter((invocation) =>
+        invocation.containingType === 'Program'
+        && invocation.containingMethod === 'top-level');
+
+      expect(symbols).toEqual(expect.arrayContaining([
+        'Microsoft.AspNetCore.Mvc.ControllerBase.RedirectToAction(string)',
+        'Microsoft.AspNetCore.Mvc.ControllerBase.RedirectToAction(string,string)',
+        'Microsoft.AspNetCore.Mvc.ControllerBase.RedirectToAction(string,string,object)',
+        'Microsoft.AspNetCore.Mvc.ControllerBase.RedirectToAction(string,object)',
+        'Microsoft.AspNetCore.Mvc.ControllerBase.RedirectToActionPermanent(string)',
+      ]));
+      expect(topLevel).toEqual(expect.arrayContaining([
+        expect.objectContaining({ invocationName: 'AddScoped' }),
+        expect.objectContaining({ invocationName: 'UseMiddleware' }),
+        expect.objectContaining({ invocationName: 'Add' }),
+      ]));
+
+      const redirects = artifact.relations.filter((relation) =>
+        relation.kind === 'action_redirect');
+      expect(redirects).toHaveLength(5);
+      expect(redirects).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          source: { nodeKey: 'aspnet:action:web||home|one' },
+          target: { nodeKey: 'aspnet:action:web||home|index' },
+          edgeType: 'routes',
+        }),
+        expect.objectContaining({
+          source: { nodeKey: 'aspnet:action:web||home|two' },
+          target: { nodeKey: 'aspnet:action:web||other|index' },
+          edgeType: 'routes',
+        }),
+        expect.objectContaining({
+          source: { nodeKey: 'aspnet:action:web||home|three' },
+          target: { nodeKey: 'aspnet:action:web|admin|home|index' },
+          edgeType: 'routes',
+        }),
+        expect.objectContaining({
+          source: { nodeKey: 'aspnet:action:web||home|routevalues' },
+          target: { nodeKey: 'aspnet:action:web||home|index' },
+          edgeType: 'routes',
+        }),
+      ]));
+      expect(artifact.stats.actionRedirectsResolved).toBe(5);
+      expect(artifact.stats.actionRedirectsSkipped).toBe(1);
+
+      expect(artifact.relations).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'di_registration',
+          source: { nodeId: 'file:Web/Program.cs' },
+          target: { nodeId: 'file:Web/Services/Foo.cs' },
+          edgeType: 'configures',
+          evidence: expect.objectContaining({
+            rule: 'aspnet-di-registration+service=IFoo&impl=FooImpl&lifetime=scoped',
+          }),
+        }),
+        expect.objectContaining({
+          kind: 'middleware_registration',
+          source: { nodeId: 'file:Web/Program.cs' },
+          target: { nodeId: 'file:Web/Middleware/ExceptionMiddleware.cs' },
+          edgeType: 'middleware',
+        }),
+        expect.objectContaining({
+          kind: 'global_filter_registration',
+          source: { nodeId: 'file:Web/Program.cs' },
+          target: { nodeId: 'file:Web/Filters/GlobalFilter.cs' },
+          edgeType: 'configures',
+          evidence: expect.objectContaining({ rule: 'aspnet-global-filter+scope=global' }),
+        }),
+      ]));
+      expect(artifact.relations.some((relation) =>
+        relation.kind === 'di_registration'
+        && relation.source.nodeId !== 'file:Web/Program.cs')).toBe(false);
+      expect(artifact.stats.diRegistrationsResolved).toBe(1);
+      expect(artifact.stats.middlewareRegistered).toBe(1);
+      expect(artifact.stats.globalFiltersResolved).toBe(1);
+      expect(artifact.relations.filter((relation) =>
+        relation.kind === 'global_filter_registration')).toHaveLength(1);
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  }, 90_000);
+
   it('uses the default semantic-facts timeout when the environment value is unset', async () => {
     const { resolveSemanticFactsTimeoutMs } = await import(pathToFileURL(RUNNER).href);
 
@@ -304,7 +501,7 @@ describe('run-framework-relations.mjs', () => {
     }
   });
 
-  it.skipIf(!hasDotnet8)('skips top-level invocations without losing controller facts', async () => {
+  it.skipIf(!hasDotnet8)('skips unrelated top-level invocations without losing controller facts', async () => {
     const fixture = createRoslynFixture();
     try {
       const { loadCSharpSemanticFacts } = await import(pathToFileURL(RUNNER).href);
