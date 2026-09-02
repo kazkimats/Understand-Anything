@@ -71,4 +71,14 @@ describe('detect-frameworks.mjs', () => {
       'Custom Framework',
     ]);
   });
+
+  it('detects ASP.NET Core from a web project but not a plain class library', () => {
+    const project = setup({
+      'src/Web/Web.csproj': '<Project Sdk="Microsoft.NET.Sdk.Web" />\n',
+      'src/Library/Library.csproj': '<Project Sdk="Microsoft.NET.Sdk" />\n',
+    });
+
+    expect(run(project.root, project.scanPath).status).toBe(0);
+    expect(JSON.parse(readFileSync(project.scanPath, 'utf-8')).frameworks).toEqual(['aspnet']);
+  });
 });

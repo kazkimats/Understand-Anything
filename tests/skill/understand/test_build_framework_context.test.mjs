@@ -18,6 +18,11 @@ describe('build-framework-context.mjs', () => {
     expect(context.match(/# Ruby on Rails Framework Addendum/g)).toHaveLength(1);
   });
 
+  it('loads the ASP.NET addendum through its registered config path', async () => {
+    const { buildFrameworkContext } = await import(pathToFileURL(SCRIPT).href);
+    expect(buildFrameworkContext(['aspnet'])).toContain('# ASP.NET Core Framework Addendum');
+  });
+
   it('returns an empty context when no registered addendum applies', async () => {
     const { buildFrameworkContext } = await import(pathToFileURL(SCRIPT).href);
     expect(buildFrameworkContext(['unknown'])).toBe('');
