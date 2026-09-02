@@ -19,6 +19,7 @@ export {
   FrameworkRelationRegistry,
   runFrameworkRelationProviders,
 } from "./registry.js";
+export { aspnetProvider } from "./providers/index.js";
 export type {
   FrameworkProviderRunStats,
   FrameworkProviderRunResult,

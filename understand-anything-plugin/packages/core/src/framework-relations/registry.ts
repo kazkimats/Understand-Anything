@@ -5,6 +5,7 @@ import type {
   FrameworkRelationProvider,
 } from "./types.js";
 import { validateFrameworkRelationArtifact } from "./types.js";
+import { aspnetProvider } from "./providers/index.js";
 
 export class FrameworkRelationRegistry {
   private readonly providers = new Map<string, FrameworkRelationProvider>();
@@ -32,7 +33,9 @@ export class FrameworkRelationRegistry {
   }
 
   static createDefault(): FrameworkRelationRegistry {
-    return new FrameworkRelationRegistry();
+    const registry = new FrameworkRelationRegistry();
+    registry.register(aspnetProvider);
+    return registry;
   }
 }
 
