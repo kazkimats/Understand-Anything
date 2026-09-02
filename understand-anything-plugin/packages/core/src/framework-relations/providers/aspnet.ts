@@ -323,14 +323,17 @@ function mvcViewName(
     const fact = semanticInvocation.fact;
     if (!fact?.symbolName.startsWith(prefix) || !fact.symbolName.endsWith(")")) return null;
     const parameters = fact.symbolName.slice(prefix.length, -1);
+    // Program.cs renders MethodSymbolName with SymbolDisplayFormat.FullyQualifiedFormat,
+    // which includes UseSpecialTypes: parameter types appear as the C# aliases string/object.
+    // Do not "fix" these exact-match signatures to System.String or System.Object.
     switch (parameters) {
       case "":
         return action.actionName;
-      case "System.Object":
+      case "object":
         stats.actionViewsModelFallback++;
         return action.actionName;
-      case "System.String":
-      case "System.String,System.Object": {
+      case "string":
+      case "string,object": {
         const literal = stringLiteral(fact.arguments[0]);
         if (literal === null) stats.actionViewsNonLiteralSkipped++;
         return literal;
