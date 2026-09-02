@@ -88,9 +88,20 @@ internal static class Program
                 .Select(path => Path.GetFullPath(Path.Combine(projectRoot, path)))
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
+            var skippedInvocations = 0;
             foreach (var relativeProjectFile in input.ProjectFiles.Distinct(StringComparer.OrdinalIgnoreCase))
             {
-                await AnalyzeProject(projectRoot, relativeProjectFile, selectedFiles, output);
+                skippedInvocations += await AnalyzeProject(
+                    projectRoot,
+                    relativeProjectFile,
+                    selectedFiles,
+                    output);
+            }
+
+            if (skippedInvocations > 0)
+            {
+                output.Warnings.Add(
+                    $"{skippedInvocations} invocations outside a resolvable containing method were skipped");
             }
         }
         catch (Exception error)
@@ -103,7 +114,7 @@ internal static class Program
         return 0;
     }
 
-    private static async Task AnalyzeProject(
+    private static async Task<int> AnalyzeProject(
         string projectRoot,
         string relativeProjectFile,
         HashSet<string> selectedFiles,
@@ -112,6 +123,7 @@ internal static class Program
         var projectFile = NormalizeRelative(relativeProjectFile);
         var fullProjectFile = Path.GetFullPath(Path.Combine(projectRoot, projectFile));
         var workspaceWarnings = new List<string>();
+        var skippedInvocations = 0;
 
         try
         {
@@ -165,7 +177,12 @@ internal static class Program
                 var relativeFile = Path.GetRelativePath(projectRoot, document.FilePath).Replace('\\', '/');
                 CollectTypes(projectFile, relativeFile, root, model, compilation.Assembly, output);
                 CollectMethods(projectFile, relativeFile, root, model, output);
-                CollectInvocations(projectFile, relativeFile, root, model, output);
+                skippedInvocations += CollectInvocations(
+                    projectFile,
+                    relativeFile,
+                    root,
+                    model,
+                    output);
             }
         }
         catch (Exception error)
@@ -179,6 +196,8 @@ internal static class Program
             output.Diagnostics.Add($"{projectFile}: {error.Message}");
             output.Warnings.AddRange(workspaceWarnings.Select(warning => $"{projectFile}: {warning}"));
         }
+
+        return skippedInvocations;
     }
 
     private static void CollectTypes(
@@ -255,18 +274,24 @@ internal static class Program
         }
     }
 
-    private static void CollectInvocations(
+    private static int CollectInvocations(
         string projectFile,
         string filePath,
         SyntaxNode root,
         SemanticModel model,
         Output output)
     {
+        var skipped = 0;
         foreach (var invocation in root.DescendantNodes().OfType<InvocationExpressionSyntax>())
         {
-            var containing = model.GetEnclosingSymbol(invocation.SpanStart) as IMethodSymbol;
-            if (containing?.ContainingType is null)
+            var containingDeclaration = invocation.Ancestors()
+                .FirstOrDefault(node => node is MethodDeclarationSyntax or ConstructorDeclarationSyntax);
+            var containing = containingDeclaration is null
+                ? null
+                : model.GetDeclaredSymbol(containingDeclaration) as IMethodSymbol;
+            if (containing?.ContainingType is null || string.IsNullOrWhiteSpace(containing.Name))
             {
+                skipped++;
                 continue;
             }
 
@@ -292,6 +317,8 @@ internal static class Program
                 TargetKind(symbol),
                 resolved));
         }
+
+        return skipped;
     }
 
     private static List<AttributeFacts> Attributes(ImmutableArray<AttributeData> attributes) =>
