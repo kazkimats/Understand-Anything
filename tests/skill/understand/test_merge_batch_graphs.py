@@ -9,6 +9,7 @@ Run from the repo root:
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 import tempfile
 import unittest
@@ -87,6 +88,124 @@ def _function_node(path: str, name: str, **extra: Any) -> dict[str, Any]:
     }
     node.update(extra)
     return node
+
+
+class FrameworkRelationMaterializerTests(unittest.TestCase):
+    def test_materializes_common_candidates_and_relations_safely(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            intermediate = Path(temp)
+            assembled = {
+                "nodes": [
+                    _file_node("routes.fake"),
+                    _file_node("handler.fake"),
+                    _function_node("handler.fake", "handle", summary="LLM summary"),
+                ],
+                "edges": [{
+                    "source": "file:handler.fake",
+                    "target": "function:handler.fake:handle",
+                    "type": "contains",
+                    "direction": "forward",
+                    "weight": 0.8,
+                }],
+            }
+            artifact = {
+                "schemaVersion": 1,
+                "frameworkId": "fake-framework",
+                "fileDependencies": [],
+                "nodes": [
+                    {
+                        "key": "route",
+                        "node": {
+                            "id": "endpoint:GET /fake",
+                            "type": "endpoint",
+                            "name": "GET /fake",
+                            "filePath": "routes.fake",
+                            "summary": "Deterministic endpoint",
+                            "tags": ["fake"],
+                            "complexity": "simple",
+                        },
+                    },
+                    {
+                        "key": "handler",
+                        "node": {
+                            "id": "func:handler.fake:handle",
+                            "type": "function",
+                            "name": "handle",
+                            "filePath": "handler.fake",
+                            "summary": "Must not replace LLM summary",
+                            "tags": ["fake"],
+                            "complexity": "simple",
+                        },
+                    },
+                ],
+                "relations": [
+                    {
+                        "kind": "fake_route",
+                        "source": {"nodeKey": "route"},
+                        "target": {"nodeKey": "handler"},
+                        "edgeType": "routes",
+                    },
+                    {
+                        "kind": "duplicate",
+                        "source": {"nodeKey": "route"},
+                        "target": {"nodeKey": "handler"},
+                        "edgeType": "routes",
+                    },
+                    {
+                        "kind": "dangling",
+                        "source": {"nodeId": "file:missing"},
+                        "target": {"nodeKey": "handler"},
+                        "edgeType": "depends_on",
+                    },
+                    {
+                        "kind": "self",
+                        "source": {"nodeKey": "handler"},
+                        "target": {"nodeKey": "handler"},
+                        "edgeType": "calls",
+                    },
+                ],
+                "stats": {},
+                "warnings": [],
+            }
+            (intermediate / "ua-framework-relations-fake-framework.json").write_text(
+                json.dumps(artifact), encoding="utf-8"
+            )
+
+            stats, _ = mbg.materialize_framework_relations(assembled, intermediate)
+
+            nodes = {node["id"]: node for node in assembled["nodes"]}
+            self.assertIn("endpoint:GET /fake", nodes)
+            self.assertEqual(nodes["function:handler.fake:handle"]["summary"], "LLM summary")
+            edge_keys = {
+                (edge["source"], edge["target"], edge["type"])
+                for edge in assembled["edges"]
+            }
+            self.assertIn(("file:routes.fake", "endpoint:GET /fake", "contains"), edge_keys)
+            self.assertIn(
+                ("endpoint:GET /fake", "function:handler.fake:handle", "routes"),
+                edge_keys,
+            )
+            self.assertEqual(len(edge_keys), len(assembled["edges"]))
+            self.assertEqual(stats["nodesMaterialized"], 1)
+            self.assertEqual(stats["relationsAdded"], 1)
+            self.assertEqual(stats["duplicateRelation"], 1)
+            self.assertEqual(stats["missingEndpoint"], 1)
+            self.assertEqual(stats["invalidRelation"], 1)
+
+            (intermediate / "ua-framework-relations-fake-framework.json").unlink()
+            mbg.materialize_framework_relations(assembled, intermediate)
+            self.assertNotIn(
+                "endpoint:GET /fake",
+                {node["id"] for node in assembled["nodes"]},
+            )
+            self.assertIn(
+                "function:handler.fake:handle",
+                {node["id"] for node in assembled["nodes"]},
+            )
+
+    def test_materializer_source_has_no_framework_specific_branch(self) -> None:
+        source = _MODULE_PATH.read_text(encoding="utf-8").lower()
+        self.assertNotIn("asp" + "net", source)
 
 
 # ── is_test_path ──────────────────────────────────────────────────────────

@@ -93,6 +93,25 @@ COMPLEXITY_MAP: dict[str, str] = {
 
 VALID_COMPLEXITY = {"simple", "moderate", "complex"}
 
+FRAMEWORK_NODE_TYPES = {
+    "file", "function", "class", "module", "concept",
+    "config", "document", "service", "table", "endpoint",
+    "pipeline", "schema", "resource", "domain", "flow", "step",
+    "article", "entity", "topic", "claim", "source",
+    "page", "screen", "component", "componentSet", "instance", "token",
+}
+
+FRAMEWORK_EDGE_TYPES = {
+    "imports", "exports", "contains", "inherits", "implements",
+    "calls", "subscribes", "publishes", "middleware",
+    "reads_from", "writes_to", "transforms", "validates",
+    "depends_on", "tested_by", "configures", "related", "similar_to",
+    "deploys", "serves", "provisions", "triggers", "migrates",
+    "documents", "routes", "defines_schema", "contains_flow", "flow_step",
+    "cross_domain", "cites", "contradicts", "builds_on", "exemplifies",
+    "categorized_under", "authored_by", "instance_of", "variant_of", "uses_token",
+}
+
 
 # ── tested_by linker configuration ────────────────────────────────────────
 
@@ -1922,6 +1941,239 @@ def link_csharp_deterministic_edges(
     return stats, warnings + lines
 
 
+# ── Generic deterministic framework relation materializer ────────────────
+
+def _framework_node_id(node_id: str) -> str:
+    """Canonicalize the one legacy prefix accepted by batch normalization."""
+    return f"function:{node_id[5:]}" if node_id.startswith("func:") else node_id
+
+
+def _valid_framework_node(node: Any) -> bool:
+    return (
+        isinstance(node, dict)
+        and isinstance(node.get("id"), str)
+        and bool(node["id"])
+        and node.get("type") in FRAMEWORK_NODE_TYPES
+        and isinstance(node.get("name"), str)
+        and isinstance(node.get("filePath"), str)
+        and bool(node["filePath"])
+        and isinstance(node.get("summary"), str)
+        and isinstance(node.get("tags"), list)
+        and all(isinstance(tag, str) for tag in node["tags"])
+        and node.get("complexity") in VALID_COMPLEXITY
+        and (
+            node.get("lineRange") is None
+            or (
+                isinstance(node["lineRange"], list)
+                and len(node["lineRange"]) == 2
+                and all(isinstance(value, int) for value in node["lineRange"])
+            )
+        )
+    )
+
+
+def _framework_ref_id(ref: Any, node_keys: dict[str, str]) -> str | None:
+    if not isinstance(ref, dict) or len(ref) != 1:
+        return None
+    node_id = ref.get("nodeId")
+    if isinstance(node_id, str) and node_id:
+        return _framework_node_id(node_id)
+    node_key = ref.get("nodeKey")
+    if isinstance(node_key, str) and node_key:
+        return node_keys.get(node_key)
+    return None
+
+
+def materialize_framework_relations(
+    assembled: dict[str, Any],
+    intermediate_dir: Path,
+) -> tuple[dict[str, int], list[str]]:
+    """Materialize every common artifact without interpreting provider semantics."""
+    stats = {
+        "nodesRequested": 0,
+        "nodesMaterialized": 0,
+        "relationsRequested": 0,
+        "relationsAdded": 0,
+        "missingEndpoint": 0,
+        "invalidRelation": 0,
+        "duplicateRelation": 0,
+        "containsAdded": 0,
+        "artifactsLoaded": 0,
+        "artifactsInvalid": 0,
+    }
+    warnings: list[str] = []
+    # Incremental baselines can contain relations from a previous provider run.
+    # Remove only those marked common relations; current artifacts are reapplied below.
+    assembled["edges"] = [
+        edge for edge in assembled.get("edges", [])
+        if not (isinstance(edge, dict) and edge.get("frameworkRelation"))
+    ]
+    node_ids = {
+        node.get("id") for node in assembled.get("nodes", [])
+        if isinstance(node, dict) and isinstance(node.get("id"), str)
+    }
+    edge_keys = {
+        (edge.get("source"), edge.get("target"), edge.get("type"))
+        for edge in assembled.get("edges", [])
+        if isinstance(edge, dict)
+    }
+    live_candidate_ids: set[str] = set()
+
+    for path in sorted(intermediate_dir.glob("ua-framework-relations-*.json")):
+        if path.name == "ua-framework-relations-stats.json":
+            continue
+        try:
+            artifact = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            stats["artifactsInvalid"] += 1
+            warnings.append(f"  {path.name}: invalid JSON ({error})")
+            continue
+        if not (
+            isinstance(artifact, dict)
+            and artifact.get("schemaVersion") == 1
+            and isinstance(artifact.get("frameworkId"), str)
+            and isinstance(artifact.get("fileDependencies"), list)
+            and isinstance(artifact.get("nodes"), list)
+            and isinstance(artifact.get("relations"), list)
+            and isinstance(artifact.get("stats"), dict)
+            and isinstance(artifact.get("warnings"), list)
+        ):
+            stats["artifactsInvalid"] += 1
+            warnings.append(f"  {path.name}: invalid artifact schema")
+            continue
+
+        stats["artifactsLoaded"] += 1
+        node_keys: dict[str, str] = {}
+        stats["nodesRequested"] += len(artifact["nodes"])
+        for candidate in artifact["nodes"]:
+            if not isinstance(candidate, dict) or not isinstance(candidate.get("key"), str):
+                stats["invalidRelation"] += 1
+                continue
+            key = candidate["key"]
+            node = candidate.get("node")
+            if key in node_keys or not _valid_framework_node(node):
+                stats["invalidRelation"] += 1
+                continue
+            candidate_node = dict(node)
+            candidate_node["id"] = _framework_node_id(candidate_node["id"])
+            node_id = candidate_node["id"]
+            node_keys[key] = node_id
+            live_candidate_ids.add(node_id)
+            if node_id in node_ids:
+                continue
+            candidate_node["deterministic"] = True
+            candidate_node["frameworkRelation"] = artifact["frameworkId"]
+            assembled["nodes"].append(candidate_node)
+            node_ids.add(node_id)
+            stats["nodesMaterialized"] += 1
+
+            if candidate_node["type"] == "file":
+                continue
+            file_id = f"file:{candidate_node['filePath']}"
+            contains_key = (file_id, node_id, "contains")
+            if file_id in node_ids and file_id != node_id and contains_key not in edge_keys:
+                assembled["edges"].append({
+                    "source": file_id,
+                    "target": node_id,
+                    "type": "contains",
+                    "direction": "forward",
+                    "weight": 1.0,
+                    "deterministic": True,
+                    "frameworkRelation": artifact["frameworkId"],
+                })
+                edge_keys.add(contains_key)
+                stats["containsAdded"] += 1
+
+        stats["relationsRequested"] += len(artifact["relations"])
+        for relation in artifact["relations"]:
+            if not isinstance(relation, dict) or relation.get("edgeType") not in FRAMEWORK_EDGE_TYPES:
+                stats["invalidRelation"] += 1
+                continue
+            source = _framework_ref_id(relation.get("source"), node_keys)
+            target = _framework_ref_id(relation.get("target"), node_keys)
+            if source is None or target is None or source not in node_ids or target not in node_ids:
+                stats["missingEndpoint"] += 1
+                continue
+            if source == target:
+                stats["invalidRelation"] += 1
+                continue
+            weight = relation.get("weight", 1.0)
+            if not isinstance(weight, (int, float)) or isinstance(weight, bool) or not 0 <= weight <= 1:
+                stats["invalidRelation"] += 1
+                continue
+            edge_type = relation["edgeType"]
+            edge_key = (source, target, edge_type)
+            if edge_key in edge_keys:
+                stats["duplicateRelation"] += 1
+                continue
+            edge = {
+                "source": source,
+                "target": target,
+                "type": edge_type,
+                "direction": "forward",
+                "weight": float(weight),
+                "deterministic": True,
+                "frameworkRelation": artifact["frameworkId"],
+            }
+            evidence = relation.get("evidence")
+            if isinstance(evidence, dict) and isinstance(evidence.get("rule"), str):
+                edge["description"] = f"Deterministic framework rule: {evidence['rule']}"
+            assembled["edges"].append(edge)
+            edge_keys.add(edge_key)
+            stats["relationsAdded"] += 1
+
+    stale_node_ids = {
+        node.get("id") for node in assembled.get("nodes", [])
+        if (
+            isinstance(node, dict)
+            and node.get("frameworkRelation")
+            and node.get("id") not in live_candidate_ids
+        )
+    }
+    if stale_node_ids:
+        assembled["nodes"] = [
+            node for node in assembled["nodes"]
+            if not (isinstance(node, dict) and node.get("id") in stale_node_ids)
+        ]
+        assembled["edges"] = [
+            edge for edge in assembled["edges"]
+            if not (
+                isinstance(edge, dict)
+                and (edge.get("source") in stale_node_ids or edge.get("target") in stale_node_ids)
+            )
+        ]
+
+    stats_path = intermediate_dir / "ua-framework-relations-stats.json"
+    generic_stats: dict[str, Any] = {}
+    try:
+        loaded_stats = json.loads(stats_path.read_text(encoding="utf-8"))
+        if isinstance(loaded_stats, dict):
+            generic_stats = loaded_stats
+    except (OSError, json.JSONDecodeError):
+        pass
+    for key in (
+        "nodesRequested", "nodesMaterialized", "relationsRequested", "relationsAdded",
+        "missingEndpoint", "invalidRelation", "duplicateRelation",
+    ):
+        generic_stats[key] = stats[key]
+    try:
+        stats_path.write_text(json.dumps(generic_stats, indent=2), encoding="utf-8")
+    except OSError as error:
+        warnings.append(f"  could not write generic stats: {error}")
+
+    lines = [
+        f"  artifacts loaded: {stats['artifactsLoaded']}",
+        f"  artifacts invalid: {stats['artifactsInvalid']}",
+        f"  nodes requested/materialized: {stats['nodesRequested']}/{stats['nodesMaterialized']}",
+        f"  relations requested/added: {stats['relationsRequested']}/{stats['relationsAdded']}",
+        f"  contains added: {stats['containsAdded']}",
+        f"  missing endpoints: {stats['missingEndpoint']}",
+        f"  invalid relations: {stats['invalidRelation']}",
+        f"  duplicate relations: {stats['duplicateRelation']}",
+    ]
+    return stats, warnings + lines
+
+
 # ── Main ──────────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -2102,6 +2354,12 @@ def main() -> None:
         report.append("")
         report.append("C# deterministic linker:")
         report.extend(csharp_report)
+
+    _, framework_report = materialize_framework_relations(assembled, intermediate_dir)
+    if framework_report:
+        report.append("")
+        report.append("Framework relation materializer:")
+        report.extend(framework_report)
 
     # Print report
     print("", file=sys.stderr)
