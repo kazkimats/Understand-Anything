@@ -75,6 +75,48 @@ describe("runFrameworkRelationProviders", () => {
     });
     expect(result.artifacts).toEqual([]);
     expect(result.stats.providersDetected).toBe(0);
+    expect(result.stats.semanticFactsAvailable).toBe(0);
+    expect(result.stats.semanticFactsProjects).toBe(0);
+    expect(result.stats.semanticFactsIncomplete).toBe(0);
+  });
+
+  it("reports generic semantic fact availability and incomplete projects", async () => {
+    const result = await runFrameworkRelationProviders({
+      frameworkIds: [],
+      frameworkRegistry: frameworkRegistry(),
+      providerRegistry: new FrameworkRelationRegistry(),
+      context: {
+        ...context,
+        semanticFacts: {
+          schemaVersion: 1,
+          projects: [
+            {
+              projectFile: "Web/Web.csproj",
+              compilationSucceeded: true,
+              targetFrameworks: ["net8.0"],
+              references: [],
+              referencesResolved: true,
+            },
+            {
+              projectFile: "Broken/Broken.csproj",
+              compilationSucceeded: false,
+              targetFrameworks: ["net8.0"],
+              references: [],
+              referencesResolved: false,
+            },
+          ],
+          types: [],
+          methods: [],
+          invocations: [],
+          diagnostics: [],
+          warnings: [],
+        },
+      },
+    });
+
+    expect(result.stats.semanticFactsAvailable).toBe(1);
+    expect(result.stats.semanticFactsProjects).toBe(2);
+    expect(result.stats.semanticFactsIncomplete).toBe(1);
   });
 
   it("runs two providers and validates their common artifacts", async () => {
