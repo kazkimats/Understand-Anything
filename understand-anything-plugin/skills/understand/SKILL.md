@@ -289,6 +289,9 @@ This writes common `ua-framework-relations-<framework-id>.json` artifacts and
 unions their `fileDependencies` into `scan-result.json#importMap`, so Phase 1.5
 batching, `neighborMap`, and `batchImportData` all see framework adjacency.
 Provider failures are warnings and do not prevent other providers from running.
+Set `UA_CSHARP_SEMANTIC_FACTS=1` to opt into the Roslyn semantic-facts layer when
+.NET SDK 8 or newer is available; without it, framework providers retain their
+existing syntax-based behavior.
 
 Build the canonical framework prompt context once for reuse by both analyzers:
 

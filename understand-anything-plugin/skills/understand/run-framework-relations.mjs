@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /** Run deterministic relation providers and union their file adjacency into scan-result.json. */
 import { createRequire } from 'node:module';
+import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import {
   existsSync,
   mkdirSync,
@@ -34,7 +36,13 @@ const {
   matchesManifestPattern,
   resolveUaDir,
   runFrameworkRelationProviders,
+  parseCSharpSemanticFactsJson,
 } = core;
+
+const SEMANTIC_FACTS_FLAG = 'UA_CSHARP_SEMANTIC_FACTS';
+const SEMANTIC_FACTS_TIMEOUT_MS = 60_000;
+const SEMANTIC_FACTS_PROJECT = join(SKILL_DIR, 'dotnet', 'semantic-facts', 'semantic-facts.csproj');
+const SEMANTIC_FACTS_SOURCE = join(SKILL_DIR, 'dotnet', 'semantic-facts', 'Program.cs');
 
 function isWithin(root, candidate) {
   const rel = relative(root, candidate);
@@ -116,6 +124,113 @@ function augmentDeterministicFrameworks(scan, root, registry) {
   scan.frameworks = frameworks;
 }
 
+function normalizePath(path) {
+  return path.replace(/\\/g, '/').replace(/^\.\//, '');
+}
+
+function pathDirname(path) {
+  const index = path.lastIndexOf('/');
+  return index === -1 ? '' : path.slice(0, index);
+}
+
+function isInProject(path, projectRoot) {
+  return projectRoot === '' || path === projectRoot || path.startsWith(`${projectRoot}/`);
+}
+
+function semanticFactInputs(scan, root) {
+  const keywords = [
+    'microsoft.net.sdk.web',
+    'microsoft.aspnetcore.app',
+    'microsoft.aspnetcore.mvc',
+    'microsoft.net.sdk.razor',
+  ];
+  const projectFiles = [];
+  for (const file of scan.files ?? []) {
+    const path = normalizePath(file.path);
+    if (!path.toLowerCase().endsWith('.csproj')) continue;
+    try {
+      const target = realpathSync(join(root, path));
+      if (!isWithin(root, target)) continue;
+      const content = readFileSync(target, 'utf-8').toLowerCase();
+      if (keywords.some((keyword) => content.includes(keyword))) projectFiles.push(path);
+    } catch {
+      // The provider will independently ignore unreadable project manifests.
+    }
+  }
+  projectFiles.sort((a, b) => pathDirname(b).length - pathDirname(a).length || a.localeCompare(b));
+  const projectRoots = projectFiles.map(pathDirname);
+  const sourceFiles = (scan.files ?? [])
+    .map((file) => normalizePath(file.path))
+    .filter((path) => path.toLowerCase().endsWith('.cs'))
+    .filter((path) => projectRoots.some((projectRoot) => isInProject(path, projectRoot)));
+  return { projectFiles, sourceFiles };
+}
+
+function dotnetSdkAvailable() {
+  const result = spawnSync('dotnet', ['--version'], {
+    encoding: 'utf-8',
+    timeout: 5_000,
+    windowsHide: true,
+  });
+  if (result.status !== 0 || result.error) return false;
+  const major = Number.parseInt(result.stdout.trim().split('.')[0], 10);
+  return Number.isInteger(major) && major >= 8;
+}
+
+function semanticToolCacheDir(uaDir) {
+  const hash = createHash('sha256')
+    .update(readFileSync(SEMANTIC_FACTS_PROJECT))
+    .update(readFileSync(SEMANTIC_FACTS_SOURCE))
+    .digest('hex')
+    .slice(0, 16);
+  return join(uaDir, 'tmp', 'semantic-facts-csharp', hash);
+}
+
+function buildSemanticFactsTool(cacheDir) {
+  const outputDir = join(cacheDir, 'out');
+  const toolDll = join(outputDir, 'semantic-facts.dll');
+  if (existsSync(toolDll)) return toolDll;
+  mkdirSync(cacheDir, { recursive: true });
+  const intermediateDir = `${join(cacheDir, 'obj')}/`;
+  const result = spawnSync('dotnet', [
+    'build', SEMANTIC_FACTS_PROJECT,
+    '--configuration', 'Release',
+    '--output', outputDir,
+    '--nologo',
+    '--verbosity', 'quiet',
+    `-p:BaseIntermediateOutputPath=${intermediateDir}`,
+    `-p:MSBuildProjectExtensionsPath=${intermediateDir}`,
+    `-p:RestorePackagesPath=${join(cacheDir, 'packages')}`,
+  ], {
+    encoding: 'utf-8',
+    timeout: SEMANTIC_FACTS_TIMEOUT_MS,
+    windowsHide: true,
+  });
+  return result.status === 0 && !result.error && existsSync(toolDll) ? toolDll : null;
+}
+
+export function loadCSharpSemanticFacts(scan, root, uaDir, options = {}) {
+  const enabled = options.enabled ?? process.env[SEMANTIC_FACTS_FLAG] === '1';
+  if (!enabled || !dotnetSdkAvailable()) return undefined;
+  const { projectFiles, sourceFiles } = semanticFactInputs(scan, root);
+  if (projectFiles.length === 0 || sourceFiles.length === 0) return undefined;
+  try {
+    const toolDll = buildSemanticFactsTool(semanticToolCacheDir(uaDir));
+    if (!toolDll) return undefined;
+    const result = spawnSync('dotnet', [toolDll], {
+      input: JSON.stringify({ projectRoot: root, projectFiles, sourceFiles }),
+      encoding: 'utf-8',
+      timeout: SEMANTIC_FACTS_TIMEOUT_MS,
+      maxBuffer: 50 * 1024 * 1024,
+      windowsHide: true,
+    });
+    if (result.status !== 0 || result.error) return undefined;
+    return parseCSharpSemanticFactsJson(result.stdout);
+  } catch {
+    return undefined;
+  }
+}
+
 export function unionFileDependencies(importMap, artifacts) {
   const output = {};
   for (const [source, targets] of Object.entries(importMap ?? {})) {
@@ -146,6 +261,16 @@ export async function run(projectRoot, options = {}) {
   const changedFiles = options.changedFiles ?? readChangedFiles(options.changedFilesPath);
   refreshChangedFiles(scan, root, changedFiles, frameworkRegistry, providerRegistry);
   augmentDeterministicFrameworks(scan, root, frameworkRegistry);
+  const semanticFacts = loadCSharpSemanticFacts(scan, root, uaDir, {
+    enabled: options.enableCSharpSemanticFacts,
+  });
+  const semanticFactsPath = join(intermediateDir, 'ua-semantic-facts-csharp.json');
+  if (semanticFacts) {
+    mkdirSync(intermediateDir, { recursive: true });
+    writeFileSync(semanticFactsPath, `${JSON.stringify(semanticFacts, null, 2)}\n`, 'utf-8');
+  } else if (existsSync(semanticFactsPath)) {
+    unlinkSync(semanticFactsPath);
+  }
 
   const result = await runFrameworkRelationProviders({
     frameworkIds: Array.isArray(scan.frameworks) ? scan.frameworks : [],
@@ -155,6 +280,7 @@ export async function run(projectRoot, options = {}) {
       projectRoot: root,
       files: Array.isArray(scan.files) ? scan.files : [],
       changedFiles,
+      semanticFacts,
       async readFile(filePath) {
         try {
           const target = realpathSync(join(root, filePath));

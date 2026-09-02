@@ -51,6 +51,9 @@ export interface FrameworkProviderRunStats {
   missingEndpoint: number;
   invalidRelation: number;
   duplicateRelation: number;
+  semanticFactsAvailable: number;
+  semanticFactsProjects: number;
+  semanticFactsIncomplete: number;
 }
 
 export interface FrameworkProviderRunResult {
@@ -78,6 +81,10 @@ export async function runFrameworkRelationProviders(options: {
     missingEndpoint: 0,
     invalidRelation: 0,
     duplicateRelation: 0,
+    semanticFactsAvailable: options.context.semanticFacts ? 1 : 0,
+    semanticFactsProjects: options.context.semanticFacts?.projects.length ?? 0,
+    semanticFactsIncomplete: options.context.semanticFacts?.projects.filter((project) =>
+      !project.compilationSucceeded || project.referencesResolved === false).length ?? 0,
   };
   const artifacts: FrameworkRelationArtifact[] = [];
   const warnings: string[] = [];

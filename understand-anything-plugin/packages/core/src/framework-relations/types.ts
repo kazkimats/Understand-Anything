@@ -2,6 +2,7 @@ import { z } from "zod";
 import { EdgeTypeSchema, GraphNodeSchema } from "../schema.js";
 import type { EdgeType, NodeType, StructuralAnalysis } from "../types.js";
 import type { FrameworkConfig } from "../languages/types.js";
+import type { CSharpSemanticFacts } from "./csharp-semantic/facts.js";
 
 export interface ProjectFile {
   path: string;
@@ -20,6 +21,7 @@ export interface FrameworkRelationContext {
   files: ProjectFile[];
   changedFiles?: string[];
   extractionResults?: FrameworkStructuralAnalysis[];
+  semanticFacts?: CSharpSemanticFacts;
   readFile(path: string): Promise<string | null>;
 }
 
