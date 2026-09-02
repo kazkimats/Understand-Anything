@@ -61,6 +61,33 @@ public class HomeController : Controller
 }
 
 describe('run-framework-relations.mjs', () => {
+  it('selects the semantic-facts TFM from the detected SDK major', async () => {
+    const {
+      parseDotnetVersion,
+      semanticFactsSdkSupported,
+      semanticFactsTargetFramework,
+    } = await import(pathToFileURL(RUNNER).href);
+
+    expect(semanticFactsTargetFramework('8.0.424')).toBe('net8.0');
+    expect(semanticFactsTargetFramework('9.0.100')).toBe('net9.0');
+    expect(semanticFactsTargetFramework('10.0.100')).toBe('net10.0');
+    expect(semanticFactsTargetFramework('10.0.100-preview.2')).toBe('net10.0');
+    expect(semanticFactsTargetFramework('not-a-version')).toBeNull();
+
+    expect(semanticFactsSdkSupported(parseDotnetVersion('7.0.410'))).toBe(false);
+    expect(semanticFactsSdkSupported(parseDotnetVersion('8.0.100'))).toBe(true);
+    expect(semanticFactsSdkSupported(parseDotnetVersion('invalid'))).toBe(false);
+  });
+
+  it('uses the raw SDK version to select the semantic-facts cache directory', async () => {
+    const { semanticToolCacheDir } = await import(pathToFileURL(RUNNER).href);
+    const uaDir = join(tmpdir(), 'ua-semantic-cache-test');
+
+    expect(semanticToolCacheDir(uaDir, '8.0.424')).not.toBe(
+      semanticToolCacheDir(uaDir, '10.0.100'),
+    );
+  });
+
   it('unions and deduplicates file dependencies without dropping imports', async () => {
     const { unionFileDependencies } = await import(pathToFileURL(RUNNER).href);
     expect(unionFileDependencies({
