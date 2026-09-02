@@ -90,6 +90,8 @@ const EMPTY_STATS = {
   actionViewsResolved: 0,
   actionViewsMissing: 0,
   actionViewsAmbiguous: 0,
+  actionViewsModelFallback: 0,
+  actionViewsNonLiteralSkipped: 0,
   razorViewsScanned: 0,
   razorModelsResolved: 0,
   razorModelsAmbiguous: 0,
@@ -112,6 +114,11 @@ const MVC_CONTROLLER_TYPES = new Set([
 ]);
 
 type SemanticDecision = "confirmed" | "denied" | "fallback";
+
+interface SemanticInvocationDecision {
+  decision: SemanticDecision;
+  fact: SemanticInvocationFacts | null;
+}
 
 function semanticAttribute(
   attributesToSearch: SemanticAttributeFacts[],
@@ -219,7 +226,7 @@ class FactsResolver {
   viewInvocation(
     action: ActionInfo,
     call: CallGraphEntry,
-  ): { decision: SemanticDecision; fact: SemanticInvocationFacts | null } {
+  ): SemanticInvocationDecision {
     if (!this.usable(action.controller.project) || !this.facts || !action.semanticMethod) {
       return this.fallback({ decision: "fallback", fact: null });
     }
@@ -303,6 +310,39 @@ function stringLiteral(value: string | undefined): string | null {
     }
   }
   return null;
+}
+
+function mvcViewName(
+  action: ActionInfo,
+  semanticInvocation: SemanticInvocationDecision,
+  call: CallGraphEntry,
+  stats: Record<string, number>,
+): string | null {
+  if (semanticInvocation.decision === "confirmed") {
+    const prefix = `${MVC_NAMESPACE}.Controller.View(`;
+    const fact = semanticInvocation.fact;
+    if (!fact?.symbolName.startsWith(prefix) || !fact.symbolName.endsWith(")")) return null;
+    const parameters = fact.symbolName.slice(prefix.length, -1);
+    switch (parameters) {
+      case "":
+        return action.actionName;
+      case "System.Object":
+        stats.actionViewsModelFallback++;
+        return action.actionName;
+      case "System.String":
+      case "System.String,System.Object": {
+        const literal = stringLiteral(fact.arguments[0]);
+        if (literal === null) stats.actionViewsNonLiteralSkipped++;
+        return literal;
+      }
+      default:
+        return null;
+    }
+  }
+
+  const invocationArguments = call.arguments ?? [];
+  if (invocationArguments.length === 0) return action.actionName;
+  return stringLiteral(invocationArguments[0]);
 }
 
 function firstAttributeString(value: { attributes?: AttributeInfo[] }, name: string): string | null {
@@ -596,15 +636,8 @@ function resolveActionViews(
       stats.actionViewCandidates++;
       const semanticInvocation = factsResolver.viewInvocation(action, call);
       if (semanticInvocation.decision === "denied") continue;
-      const invocationArguments = semanticInvocation.decision === "confirmed"
-        ? semanticInvocation.fact?.arguments ?? []
-        : call.arguments ?? [];
-      let viewName = action.actionName;
-      if (invocationArguments.length > 0) {
-        const literal = stringLiteral(invocationArguments[0]);
-        if (literal === null) continue;
-        viewName = literal;
-      }
+      const viewName = mvcViewName(action, semanticInvocation, call, stats);
+      if (viewName === null) continue;
       const invocationLine = semanticInvocation.decision === "confirmed"
         ? semanticInvocation.fact?.lineRange[0] ?? call.lineNumber
         : call.lineNumber;
