@@ -22,7 +22,10 @@ function createRoslynFixture() {
   mkdirSync(intermediate, { recursive: true });
   const project = `
 <Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup>
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+  </PropertyGroup>
   <ItemGroup><FrameworkReference Include="Microsoft.AspNetCore.App" /></ItemGroup>
 </Project>\n`;
   const controller = `
@@ -50,7 +53,7 @@ public class HomeController : Controller
   ];
   writeFileSync(join(root, files[0].path), project);
   writeFileSync(join(root, files[1].path), controller);
-  writeFileSync(join(root, files[2].path), 'public static class Program { public static void Main() { } }\n');
+  writeFileSync(join(root, files[2].path), 'System.Console.WriteLine("top-level");\n');
   writeFileSync(join(root, files[3].path), '<h1>Detail</h1>\n');
   writeFileSync(join(intermediate, 'scan-result.json'), JSON.stringify({
     frameworks: ['aspnet'],
@@ -169,7 +172,7 @@ describe('run-framework-relations.mjs', () => {
     }
   });
 
-  it.skipIf(!hasDotnet8)('extracts schema-valid semantic facts from an ASP.NET project', async () => {
+  it.skipIf(!hasDotnet8)('skips top-level invocations without losing controller facts', async () => {
     const fixture = createRoslynFixture();
     try {
       const { loadCSharpSemanticFacts } = await import(pathToFileURL(RUNNER).href);
@@ -182,7 +185,9 @@ describe('run-framework-relations.mjs', () => {
 
       expect(facts?.schemaVersion).toBe(1);
       expect(facts?.diagnostics).toEqual([]);
-      expect(facts?.warnings).toEqual([]);
+      expect(facts?.warnings).toContain(
+        '1 invocations outside a resolvable containing method were skipped',
+      );
       expect(facts?.projects).toEqual([
         expect.objectContaining({
           projectFile: 'Web/Web.csproj',
@@ -210,12 +215,15 @@ describe('run-framework-relations.mjs', () => {
         targetKind: 'instance-method',
         resolved: true,
       }));
+      expect(facts?.invocations).not.toContainEqual(expect.objectContaining({
+        invocationName: 'WriteLine',
+      }));
     } finally {
       rmSync(fixture.root, { recursive: true, force: true });
     }
   }, 90_000);
 
-  it.skipIf(!hasDotnet8)('runs semantic-gated relations once and preserves fallback parity', async () => {
+  it.skipIf(!hasDotnet8)('keeps controller semantic gating with top-level statements', async () => {
     const fixture = createRoslynFixture();
     try {
       const { run } = await import(pathToFileURL(RUNNER).href);

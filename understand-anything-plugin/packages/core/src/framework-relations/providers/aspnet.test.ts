@@ -40,6 +40,7 @@ function facts(options: {
   methodAttributes?: Array<{ symbolName: string; arguments: string[] }>;
   invocation?: {
     arguments?: string[];
+    containingMethod?: string;
     targetKind?: "instance-method" | "static" | "extension" | "unresolvable";
     resolved?: boolean;
     symbolName?: string;
@@ -79,7 +80,7 @@ function facts(options: {
     invocations: includeType && options.invocation !== null ? [{
       projectFile: "Web/Web.csproj",
       containingType: semanticControllerType,
-      containingMethod: "Index",
+      containingMethod: options.invocation?.containingMethod ?? "Index",
       invocationName: "View",
       symbolName: options.invocation?.symbolName
         ?? "Microsoft.AspNetCore.Mvc.Controller.View()",
@@ -451,6 +452,24 @@ public class HomeController : Controller {
     const semanticFacts = facts({
       invocation: { resolved: false, targetKind: "unresolvable", symbolName: "" },
     });
+
+    const result = await aspnetProvider.analyze(context(files, semanticFacts));
+
+    expect(result.fileDependencies).toContainEqual(expect.objectContaining({
+      targetPath: "Web/Views/Home/Index.cshtml",
+    }));
+    expect(result.stats.roslynFallbackDecisions).toBe(1);
+  });
+
+  it("never matches an invocation with an empty containing method", async () => {
+    const files = semanticFiles(
+      `namespace Web;
+public class HomeController : Controller {
+  public IActionResult Index() { return View(); }
+}`,
+      ["Web/Views/Home/Index.cshtml"],
+    );
+    const semanticFacts = facts({ invocation: { containingMethod: "" } });
 
     const result = await aspnetProvider.analyze(context(files, semanticFacts));
 
