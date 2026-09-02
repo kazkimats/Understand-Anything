@@ -290,6 +290,14 @@ unions their `fileDependencies` into `scan-result.json#importMap`, so Phase 1.5
 batching, `neighborMap`, and `batchImportData` all see framework adjacency.
 Provider failures are warnings and do not prevent other providers from running.
 
+Build the canonical framework prompt context once for reuse by both analyzers:
+
+```bash
+node "<SKILL_DIR>/build-framework-context.mjs" "$PROJECT_ROOT"
+```
+
+Read `$UA_DIR/intermediate/framework-context.md` into `$FRAMEWORK_CONTEXT`.
+
 **Gate check:** If >100 files, inform the user and suggest scoping with a subdirectory argument. Proceed only if user confirms or add guidance that this may take a while.
 
 If the scan result includes `filteredByIgnore > 0`, report:
@@ -320,6 +328,11 @@ If the script exits non-zero, the failure is hard — relay the full stderr to t
 
 Load `$UA_DIR/intermediate/batches.json` (produced by Phase 1.5). Iterate the `batches[]` array.
 
+Build `$LANGUAGE_CONTEXT` by reading each detected language's optional
+`./languages/<language-id>.md` snippet under a `## Language Context` header,
+including non-code languages. Reuse `$FRAMEWORK_CONTEXT` from Phase 1 for every
+file-analyzer dispatch; do not rebuild it per batch.
+
 Report: `[Phase 2/7] Analyzing files — <totalFiles> files in <totalBatches> batches (up to 5 concurrent)...`
 
 For each batch, dispatch a subagent using the `file-analyzer` agent definition (at `agents/file-analyzer.md`). Run up to **5 subagents concurrently**. Append the following additional context:
@@ -328,6 +341,12 @@ For each batch, dispatch a subagent using the `file-analyzer` agent definition (
 >
 > Project: `<projectName>` — `<projectDescription>`
 > Languages: `<languages from Phase 1>`
+>
+> Language context:
+> `$LANGUAGE_CONTEXT`
+>
+> Framework context:
+> `$FRAMEWORK_CONTEXT`
 >
 > $LANGUAGE_DIRECTIVE
 
@@ -445,7 +464,7 @@ Report to the user: `[Phase 4/7] Identifying architectural layers...`
 **Build the combined prompt template:**
  1. Use the `architecture-analyzer` agent definition (at `agents/architecture-analyzer.md`).
  2. **Language context injection:** For each language detected in Phase 1 (e.g., `python`, `markdown`, `dockerfile`, `yaml`, `sql`, `terraform`, `graphql`, `protobuf`, `shell`, `html`, `css`), read the file at `./languages/<language-id>.md` (e.g., `./languages/python.md`, `./languages/dockerfile.md`) and append its content after the base template under a `## Language Context` header. If the file does not exist for a detected language, skip it silently and continue. These files are in the `languages/` subdirectory next to this SKILL.md file. **Include non-code language snippets** — they provide edge patterns and summary styles for non-code files.
- 3. **Framework addendum injection:** For each framework detected in Phase 1 (e.g., `Django`), read the file at `./frameworks/<framework-id-lowercase>.md` (e.g., `./frameworks/django.md`) and append its full content after the language context. If the file does not exist for a detected framework, skip it silently and continue. These files are in the `frameworks/` subdirectory next to this SKILL.md file.
+ 3. **Framework addendum injection:** Append the exact `$FRAMEWORK_CONTEXT` built after Phase 1. Do not rebuild framework context independently in Phase 4; Phase 2 and Phase 4 must receive the same registered framework addenda.
  4. **Output locale injection:** If `$OUTPUT_LANGUAGE` is NOT `en` (English), read the locale guidance file at `./locales/<language-code>.md` (e.g., `./locales/zh.md`, `./locales/ja.md`, `./locales/ko.md`) and append its content after the framework addendums under a `## Output Language Guidelines` header. This provides language-specific guidance for tag naming conventions, summary style, and layer name translations. If the locale file does not exist for the specified language, skip silently — the `$LANGUAGE_DIRECTIVE` still applies. These files are in the `locales/` subdirectory next to this SKILL.md file.
 
 Append the language/framework context and the following additional context to the agent's prompt:
