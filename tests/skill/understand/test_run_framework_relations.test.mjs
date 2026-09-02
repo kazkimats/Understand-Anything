@@ -14,7 +14,7 @@ const dotnetVersion = spawnSync('dotnet', ['--version'], { encoding: 'utf-8' });
 const hasDotnet8 = dotnetVersion.status === 0
   && Number.parseInt(dotnetVersion.stdout.trim().split('.')[0], 10) >= 8;
 
-function createRoslynFixture() {
+function createRoslynFixture({ styleDiagnosticSeverityError = false } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'ua-framework-roslyn-'));
   const intermediate = join(root, '.ua', 'intermediate');
   mkdirSync(join(root, 'Web', 'Areas', 'Admin', 'Controllers'), { recursive: true });
@@ -30,6 +30,7 @@ function createRoslynFixture() {
 </Project>\n`;
   const controller = `
 using Microsoft.AspNetCore.Mvc;
+${styleDiagnosticSeverityError ? 'using System.Text;' : ''}
 namespace Web.Areas.Admin.Controllers;
 [Area("Admin")]
 public class HomeController : Controller
@@ -55,6 +56,13 @@ public class HomeController : Controller
   writeFileSync(join(root, files[1].path), controller);
   writeFileSync(join(root, files[2].path), 'System.Console.WriteLine("top-level");\n');
   writeFileSync(join(root, files[3].path), '<h1>Detail</h1>\n');
+  if (styleDiagnosticSeverityError) {
+    writeFileSync(join(root, 'Web', '.editorconfig'), `root = true
+
+[*.cs]
+dotnet_diagnostic.CS8019.severity = error
+`);
+  }
   writeFileSync(join(intermediate, 'scan-result.json'), JSON.stringify({
     frameworks: ['aspnet'],
     files,
@@ -256,6 +264,42 @@ describe('run-framework-relations.mjs', () => {
       expect(fallbackScan.importMap['Web/Areas/Admin/Controllers/HomeController.cs']).toContain(
         'Web/Areas/Admin/Views/Home/Detail.cshtml',
       );
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  }, 90_000);
+
+  it.skipIf(!hasDotnet8)('keeps controller semantic gating for editorconfig-promoted style diagnostics', async () => {
+    const fixture = createRoslynFixture({ styleDiagnosticSeverityError: true });
+    try {
+      const { run } = await import(pathToFileURL(RUNNER).href);
+      const result = await run(fixture.root, { enableCSharpSemanticFacts: true });
+      const facts = JSON.parse(readFileSync(
+        join(fixture.intermediate, 'ua-semantic-facts-csharp.json'),
+        'utf-8',
+      ));
+      const artifact = JSON.parse(readFileSync(
+        join(fixture.intermediate, 'ua-framework-relations-aspnet.json'),
+        'utf-8',
+      ));
+      const styleWarnings = facts.warnings.filter((warning) =>
+        warning.includes('style diagnostics were treated as non-fatal'));
+
+      expect(facts.diagnostics).toEqual([]);
+      expect(facts.projects).toEqual([
+        expect.objectContaining({
+          projectFile: 'Web/Web.csproj',
+          compilationSucceeded: true,
+          referencesResolved: true,
+        }),
+      ]);
+      expect(styleWarnings).toHaveLength(1);
+      expect(styleWarnings[0]).toMatch(
+        /^\d+ style diagnostics were treated as non-fatal \(CS8019: \d+\)$/,
+      );
+      expect(result.warnings).toContain(`csharp semantic facts: ${styleWarnings[0]}`);
+      expect(result.stats.semanticFactsIncomplete).toBe(0);
+      expect(artifact.stats.roslynConfirmedControllers).toBe(1);
     } finally {
       rmSync(fixture.root, { recursive: true, force: true });
     }
