@@ -92,6 +92,13 @@ const EMPTY_STATS = {
   actionViewsAmbiguous: 0,
   actionViewsModelFallback: 0,
   actionViewsNonLiteralSkipped: 0,
+  viewPartialsResolved: 0,
+  viewPartialsAmbiguous: 0,
+  viewPartialsMissing: 0,
+  viewPartialsSkipped: 0,
+  viewLayoutsResolved: 0,
+  viewLayoutsAmbiguous: 0,
+  viewLayoutsSkipped: 0,
   razorViewsScanned: 0,
   razorModelsResolved: 0,
   razorModelsAmbiguous: 0,
@@ -566,10 +573,16 @@ function buildIndexes(
   return { controllers, actions, types };
 }
 
-function actionViewCandidates(action: ActionInfo, viewName: string): string[] {
-  const root = action.controller.project.root;
-  const controller = action.controller.controllerName;
-  const area = action.area;
+interface ViewReferenceContext {
+  project: WebProject;
+  area: string | null;
+  controller: string | null;
+  baseDirectory: string;
+}
+
+function viewReferenceCandidates(context: ViewReferenceContext, viewName: string): string[] {
+  const root = context.project.root;
+  const { area, controller } = context;
   const withExtension = (path: string) => path.toLowerCase().endsWith(".cshtml")
     ? path
     : `${path}.cshtml`;
@@ -580,27 +593,45 @@ function actionViewCandidates(action: ActionInfo, viewName: string): string[] {
     return target ? [target] : [];
   }
 
-  const base = area
-    ? `Areas/${area}/Views/${controller}`
-    : `Views/${controller}`;
   if (viewName.startsWith("./") || viewName.startsWith("../")) {
-    const target = inProject(root, withExtension(posix.join(base, viewName)));
+    const target = inProject(root, withExtension(posix.join(context.baseDirectory, viewName)));
     return target ? [target] : [];
   }
 
+  const relativeName = withExtension(viewName);
   const relativeCandidates = area
     ? [
-        `Areas/${area}/Views/${controller}/${viewName}.cshtml`,
-        `Areas/${area}/Views/Shared/${viewName}.cshtml`,
-        `Views/Shared/${viewName}.cshtml`,
+        ...(controller ? [`Areas/${area}/Views/${controller}/${relativeName}`] : []),
+        `Areas/${area}/Views/Shared/${relativeName}`,
+        `Views/Shared/${relativeName}`,
       ]
     : [
-        `Views/${controller}/${viewName}.cshtml`,
-        `Views/Shared/${viewName}.cshtml`,
+        ...(controller ? [`Views/${controller}/${relativeName}`] : []),
+        `Views/Shared/${relativeName}`,
       ];
   return relativeCandidates
     .map((candidate) => inProject(root, candidate))
     .filter((candidate): candidate is string => candidate !== null);
+}
+
+function resolveViewReference(
+  context: ViewReferenceContext,
+  viewName: string,
+  allPaths: Map<string, string[]>,
+): { path: string | null; ambiguous: boolean } {
+  return uniquePath(viewReferenceCandidates(context, viewName), allPaths);
+}
+
+function actionViewContext(action: ActionInfo): ViewReferenceContext {
+  const rootRelative = action.area
+    ? `Areas/${action.area}/Views/${action.controller.controllerName}`
+    : `Views/${action.controller.controllerName}`;
+  return {
+    project: action.controller.project,
+    area: action.area,
+    controller: action.controller.controllerName,
+    baseDirectory: rootRelative,
+  };
 }
 
 function resolveActionViews(
@@ -644,7 +675,7 @@ function resolveActionViews(
       const invocationLine = semanticInvocation.decision === "confirmed"
         ? semanticInvocation.fact?.lineRange[0] ?? call.lineNumber
         : call.lineNumber;
-      const resolved = uniquePath(actionViewCandidates(action, viewName), allPaths);
+      const resolved = resolveViewReference(actionViewContext(action), viewName, allPaths);
       if (resolved.ambiguous) {
         stats.actionViewsAmbiguous++;
         continue;
@@ -680,6 +711,130 @@ function resolveActionViews(
           lineRange: [invocationLine, invocationLine],
         },
       });
+    }
+  }
+}
+
+function razorViewContext(path: string, project: WebProject): ViewReferenceContext {
+  const location = viewAreaAndController(path, project.root);
+  return {
+    project,
+    area: location.area,
+    controller: location.controller?.toLowerCase() === "shared" ? null : location.controller,
+    baseDirectory: relativeToRoot(dirname(path), project.root),
+  };
+}
+
+function razorPartialReferences(content: string): Array<{ value: string | null; index: number }> {
+  const references: Array<{ value: string | null; index: number }> = [];
+  for (const match of content.matchAll(/<partial\b[^>]*>/gi)) {
+    const tag = match[0];
+    const name = tag.match(/\bname\s*=\s*(["'])(.*?)\1/i);
+    if (!name) {
+      if (/\bname\s*=/.test(tag)) references.push({ value: null, index: match.index ?? 0 });
+      continue;
+    }
+    const value = name[2].includes("@") ? null : name[2];
+    references.push({ value, index: match.index ?? 0 });
+  }
+  for (const match of content.matchAll(
+    /\bHtml\.(?:PartialAsync|RenderPartialAsync)\s*\(\s*([^,\r\n)]+)/g,
+  )) {
+    references.push({ value: stringLiteral(match[1]), index: match.index ?? 0 });
+  }
+  return references;
+}
+
+function resolveRazorViewDependencies(
+  razorContents: Map<string, string>,
+  projects: WebProject[],
+  allPaths: Map<string, string[]>,
+  dependencies: FrameworkFileDependency[],
+  dependencyKeys: Set<string>,
+  relations: FrameworkRelation[],
+  relationKeys: Set<string>,
+  stats: Record<string, number>,
+): void {
+  const addViewDependency = (
+    kind: "view_partial" | "view_layout",
+    sourcePath: string,
+    targetPath: string,
+    line: number,
+    rule: string,
+  ) => {
+    const evidence = { rule, filePath: sourcePath, lineRange: [line, line] as [number, number] };
+    addUniqueDependency(dependencies, dependencyKeys, {
+      sourcePath,
+      targetPath,
+      kind,
+      evidence,
+    });
+    addUniqueRelation(relations, relationKeys, {
+      kind,
+      source: { nodeId: `file:${sourcePath}` },
+      target: { nodeId: `file:${targetPath}` },
+      edgeType: "depends_on",
+      weight: 1,
+      evidence,
+    });
+  };
+
+  for (const [path, content] of razorContents) {
+    if (/^\s*@page\b/m.test(content) || path.toLowerCase().endsWith("/_viewimports.cshtml")) {
+      continue;
+    }
+    const project = owningProject(path, projects);
+    if (!project) continue;
+    const viewContext = razorViewContext(path, project);
+
+    for (const reference of razorPartialReferences(content)) {
+      if (reference.value === null) {
+        stats.viewPartialsSkipped++;
+        continue;
+      }
+      const resolved = resolveViewReference(viewContext, reference.value, allPaths);
+      if (resolved.ambiguous) {
+        stats.viewPartialsAmbiguous++;
+        continue;
+      }
+      if (!resolved.path) {
+        stats.viewPartialsMissing++;
+        continue;
+      }
+      stats.viewPartialsResolved++;
+      addViewDependency(
+        "view_partial",
+        path,
+        resolved.path,
+        lineOf(content, reference.index),
+        "aspnet-razor-partial",
+      );
+    }
+
+    for (const match of content.matchAll(/\bLayout\s*=\s*([^;\r\n}]+)/g)) {
+      const layoutName = stringLiteral(match[1]);
+      if (layoutName === null) {
+        stats.viewLayoutsSkipped++;
+        continue;
+      }
+      const resolved = resolveViewReference(viewContext, layoutName, allPaths);
+      if (resolved.ambiguous) {
+        stats.viewLayoutsAmbiguous++;
+        continue;
+      }
+      if (!resolved.path) {
+        stats.viewLayoutsSkipped++;
+        continue;
+      }
+      stats.viewLayoutsResolved++;
+      const isViewStart = path.toLowerCase().endsWith("/_viewstart.cshtml");
+      addViewDependency(
+        "view_layout",
+        path,
+        resolved.path,
+        lineOf(content, match.index ?? 0),
+        isViewStart ? "aspnet-view-layout+scope=view-start" : "aspnet-view-layout+scope=explicit",
+      );
     }
   }
 }
@@ -1029,6 +1184,16 @@ export const aspnetProvider: FrameworkRelationProvider = {
       context,
       projects,
       types,
+      fileDependencies,
+      dependencyKeys,
+      relations,
+      relationKeys,
+      stats,
+    );
+    resolveRazorViewDependencies(
+      razorContents,
+      projects,
+      pathsByLower,
       fileDependencies,
       dependencyKeys,
       relations,
