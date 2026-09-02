@@ -310,7 +310,9 @@ internal static class Program
             var containing = containingDeclaration is null
                 ? null
                 : model.GetDeclaredSymbol(containingDeclaration) as IMethodSymbol;
-            if (containing?.ContainingType is null || string.IsNullOrWhiteSpace(containing.Name))
+            var topLevelRegistration = containing is null && IsTopLevelRegistrationInvocation(invocation);
+            if (!topLevelRegistration
+                && (containing?.ContainingType is null || string.IsNullOrWhiteSpace(containing.Name)))
             {
                 skipped++;
                 continue;
@@ -328,8 +330,8 @@ internal static class Program
             };
             output.Invocations.Add(new InvocationFacts(
                 projectFile,
-                SymbolName(containing.ContainingType),
-                containing.Name,
+                topLevelRegistration ? "Program" : SymbolName(containing!.ContainingType),
+                topLevelRegistration ? "top-level" : containing!.Name,
                 name,
                 symbol is null ? "" : MethodSymbolName(symbol),
                 filePath,
@@ -340,6 +342,24 @@ internal static class Program
         }
 
         return skipped;
+    }
+
+    private static bool IsTopLevelRegistrationInvocation(InvocationExpressionSyntax invocation)
+    {
+        if (invocation.Expression is not MemberAccessExpressionSyntax member)
+        {
+            return false;
+        }
+
+        var name = member.Name.Identifier.ValueText;
+        if (name is "AddSingleton" or "AddScoped" or "AddTransient" or "AddOptions" or "UseMiddleware")
+        {
+            return true;
+        }
+
+        return name == "Add"
+            && member.Expression is MemberAccessExpressionSyntax receiver
+            && receiver.Name.Identifier.ValueText == "Filters";
     }
 
     private static List<AttributeFacts> Attributes(ImmutableArray<AttributeData> attributes) =>

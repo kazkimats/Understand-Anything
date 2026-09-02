@@ -103,6 +103,11 @@ const EMPTY_STATS = {
   viewLayoutsResolved: 0,
   viewLayoutsAmbiguous: 0,
   viewLayoutsSkipped: 0,
+  globalFiltersResolved: 0,
+  middlewareRegistered: 0,
+  diRegistrationsResolved: 0,
+  registrationTypeUnresolved: 0,
+  registrationLineMissing: 0,
   razorViewsScanned: 0,
   razorModelsResolved: 0,
   razorModelsAmbiguous: 0,
@@ -848,6 +853,139 @@ function resolveActionRedirects(
   }
 }
 
+function resolveRegistrationType(
+  typeName: string,
+  projectFile: string,
+  semanticFacts: CSharpSemanticFacts,
+): SemanticTypeFacts | null {
+  const suffix = `.${typeName}`;
+  const matches = semanticFacts.types.filter((type) =>
+    normalizePath(type.projectFile) === projectFile
+    && (type.symbolName === typeName || type.symbolName.endsWith(suffix)));
+  return matches.length === 1 ? matches[0] : null;
+}
+
+function resolveProgramRegistrations(
+  semanticFacts: CSharpSemanticFacts | undefined,
+  parsedFiles: ParsedCSharpFile[],
+  projects: WebProject[],
+  dependencies: FrameworkFileDependency[],
+  dependencyKeys: Set<string>,
+  relations: FrameworkRelation[],
+  relationKeys: Set<string>,
+  stats: Record<string, number>,
+): void {
+  if (!semanticFacts) return;
+  const sources = new Map(parsedFiles.map((file) => [file.path, file.content]));
+  const addRegistration = (
+    fact: SemanticInvocationFacts,
+    target: SemanticTypeFacts,
+    kind: "global_filter_registration" | "middleware_registration" | "di_registration",
+    edgeType: "configures" | "middleware",
+    rule: string,
+  ) => {
+    const sourcePath = normalizePath(fact.filePath);
+    const targetPath = normalizePath(target.filePath);
+    const evidence = { rule, filePath: sourcePath, lineRange: fact.lineRange };
+    addUniqueDependency(dependencies, dependencyKeys, {
+      sourcePath,
+      targetPath,
+      kind,
+      evidence,
+    });
+    addUniqueRelation(relations, relationKeys, {
+      kind,
+      source: { nodeId: `file:${sourcePath}` },
+      target: { nodeId: `file:${targetPath}` },
+      edgeType,
+      weight: 1,
+      evidence,
+    });
+  };
+
+  for (const fact of semanticFacts.invocations) {
+    if (fact.containingType !== "Program" || fact.containingMethod !== "top-level") continue;
+    const filePath = normalizePath(fact.filePath);
+    if (posix.basename(filePath).toLowerCase() !== "program.cs") continue;
+    const project = owningProject(filePath, projects);
+    if (!project || normalizePath(fact.projectFile) !== project.projectFile) continue;
+    const content = sources.get(filePath);
+    const start = fact.lineRange[0] - 1;
+    const end = fact.lineRange[1];
+    const invocationText = content?.split(/\r?\n/).slice(start, end).join("\n");
+    if (!invocationText) {
+      stats.registrationLineMissing++;
+      continue;
+    }
+
+    const filter = invocationText.match(
+      /\.Filters\.Add<\s*([A-Za-z_][\w.]*)\s*>/,
+    );
+    if (fact.invocationName === "Add" && filter) {
+      const target = resolveRegistrationType(filter[1], project.projectFile, semanticFacts);
+      if (!target) {
+        stats.registrationTypeUnresolved++;
+        continue;
+      }
+      stats.globalFiltersResolved++;
+      addRegistration(
+        fact,
+        target,
+        "global_filter_registration",
+        "configures",
+        "aspnet-global-filter+scope=global",
+      );
+      continue;
+    }
+
+    const middleware = invocationText.match(
+      /\.UseMiddleware<\s*([A-Za-z_][\w.]*)\s*>/,
+    );
+    if (fact.invocationName === "UseMiddleware" && middleware) {
+      const target = resolveRegistrationType(middleware[1], project.projectFile, semanticFacts);
+      if (!target) {
+        stats.registrationTypeUnresolved++;
+        continue;
+      }
+      stats.middlewareRegistered++;
+      addRegistration(
+        fact,
+        target,
+        "middleware_registration",
+        "middleware",
+        "aspnet-middleware-registration",
+      );
+      continue;
+    }
+
+    const registration = invocationText.match(
+      /Add(Singleton|Scoped|Transient)<\s*([A-Za-z_][\w.]*)\s*(?:,\s*([A-Za-z_][\w.]*)\s*)?>/,
+    );
+    if (!registration || !["AddSingleton", "AddScoped", "AddTransient"].includes(
+      fact.invocationName,
+    )) {
+      continue;
+    }
+    if (fact.arguments.some((argument) => argument.includes("=>"))) continue;
+    const lifetime = registration[1].toLowerCase();
+    const service = registration[2];
+    const implementation = registration[3] ?? service;
+    const target = resolveRegistrationType(implementation, project.projectFile, semanticFacts);
+    if (!target) {
+      stats.registrationTypeUnresolved++;
+      continue;
+    }
+    stats.diRegistrationsResolved++;
+    addRegistration(
+      fact,
+      target,
+      "di_registration",
+      "configures",
+      `aspnet-di-registration+service=${service}&impl=${implementation}&lifetime=${lifetime}`,
+    );
+  }
+}
+
 function razorViewContext(path: string, project: WebProject): ViewReferenceContext {
   const location = viewAreaAndController(path, project.root);
   return {
@@ -1343,6 +1481,16 @@ export const aspnetProvider: FrameworkRelationProvider = {
       actions,
       factsResolver,
       actionsByKey,
+      fileDependencies,
+      dependencyKeys,
+      relations,
+      relationKeys,
+      stats,
+    );
+    resolveProgramRegistrations(
+      context.semanticFacts,
+      parsedFiles,
+      projects,
       fileDependencies,
       dependencyKeys,
       relations,
