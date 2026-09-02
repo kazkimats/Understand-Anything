@@ -14,6 +14,13 @@ import type {
   FrameworkRelationProvider,
   FrameworkRelationResult,
 } from "../types.js";
+import type {
+  CSharpSemanticFacts,
+  SemanticAttributeFacts,
+  SemanticInvocationFacts,
+  SemanticMethodFacts,
+  SemanticTypeFacts,
+} from "../csharp-semantic/facts.js";
 
 type ClassInfo = StructuralAnalysis["classes"][number];
 type FunctionInfo = StructuralAnalysis["functions"][number];
@@ -46,6 +53,7 @@ interface ActionInfo {
   area: string | null;
   key: string;
   nodeId: string;
+  semanticMethod: SemanticMethodFacts | null;
 }
 
 interface TypeInfo {
@@ -92,7 +100,149 @@ const EMPTY_STATS = {
   tagHelperLinksAmbiguous: 0,
   crossProjectSkipped: 0,
   customViewLocationSkipped: 0,
+  roslynConfirmedControllers: 0,
+  roslynDeniedControllers: 0,
+  roslynFallbackDecisions: 0,
 };
+
+const MVC_NAMESPACE = "Microsoft.AspNetCore.Mvc";
+const MVC_CONTROLLER_TYPES = new Set([
+  `${MVC_NAMESPACE}.Controller`,
+  `${MVC_NAMESPACE}.ControllerBase`,
+]);
+
+type SemanticDecision = "confirmed" | "denied" | "fallback";
+
+function semanticAttribute(
+  attributesToSearch: SemanticAttributeFacts[],
+  name: string,
+): SemanticAttributeFacts | null {
+  const symbolName = `${MVC_NAMESPACE}.${name}Attribute`;
+  return attributesToSearch.find((attribute) => attribute.symbolName === symbolName) ?? null;
+}
+
+class FactsResolver {
+  private readonly facts: CSharpSemanticFacts | undefined;
+  private readonly stats: Record<string, number>;
+
+  constructor(facts: CSharpSemanticFacts | undefined, stats: Record<string, number>) {
+    this.facts = facts;
+    this.stats = stats;
+  }
+
+  private fallback<T>(value: T): T {
+    this.stats.roslynFallbackDecisions++;
+    return value;
+  }
+
+  private usable(project: WebProject): boolean {
+    if (!this.facts) return false;
+    const projectFacts = this.facts.projects.find((candidate) =>
+      normalizePath(candidate.projectFile) === project.projectFile);
+    return projectFacts?.compilationSucceeded === true
+      && projectFacts.referencesResolved !== false
+      && projectFacts.references.some((reference) =>
+        reference === MVC_NAMESPACE || reference.startsWith(`${MVC_NAMESPACE}.`));
+  }
+
+  private typeFacts(
+    project: WebProject,
+    file: ParsedCSharpFile,
+    declaration: ClassInfo,
+  ): SemanticTypeFacts | null {
+    if (!this.usable(project)) return null;
+    return this.facts?.types.find((candidate) =>
+      normalizePath(candidate.projectFile) === project.projectFile
+      && normalizePath(candidate.filePath) === file.path
+      && candidate.kind === "class"
+      && candidate.lineRange[0] === declaration.lineRange[0]
+      && candidate.symbolName.split(".").pop()?.split("<")[0] === declaration.name) ?? null;
+  }
+
+  controller(
+    project: WebProject,
+    file: ParsedCSharpFile,
+    declaration: ClassInfo,
+  ): SemanticDecision {
+    const fact = this.typeFacts(project, file, declaration);
+    if (!fact) return this.fallback("fallback");
+    const isNonController = semanticAttribute(fact.attributes, "NonController") !== null;
+    const isController = fact.baseTypes.some((baseType) =>
+      MVC_CONTROLLER_TYPES.has(baseType.symbolName));
+    if (isController && !isNonController) {
+      this.stats.roslynConfirmedControllers++;
+      return "confirmed";
+    }
+    this.stats.roslynDeniedControllers++;
+    return "denied";
+  }
+
+  typeAttributeString(
+    project: WebProject,
+    file: ParsedCSharpFile,
+    declaration: ClassInfo,
+    name: string,
+  ): { observed: boolean; value: string | null } {
+    const fact = this.typeFacts(project, file, declaration);
+    if (!fact) return this.fallback({ observed: false, value: null });
+    return { observed: true, value: semanticAttribute(fact.attributes, name)?.arguments[0] ?? null };
+  }
+
+  method(
+    project: WebProject,
+    file: ParsedCSharpFile,
+    declaration: ClassInfo,
+    method: FunctionInfo,
+  ): SemanticMethodFacts | null {
+    const typeFact = this.typeFacts(project, file, declaration);
+    if (!typeFact || !this.facts) return this.fallback(null);
+    const fact = this.facts.methods.find((candidate) =>
+      normalizePath(candidate.projectFile) === project.projectFile
+      && normalizePath(candidate.filePath) === file.path
+      && candidate.containingType === typeFact.symbolName
+      && candidate.methodName === method.name
+      && candidate.lineRange[0] === method.lineRange[0]);
+    return fact ?? this.fallback(null);
+  }
+
+  methodAttributeString(method: SemanticMethodFacts, name: string): string | null {
+    return semanticAttribute(method.attributes, name)?.arguments[0] ?? null;
+  }
+
+  isAction(method: SemanticMethodFacts): boolean {
+    return method.modifiers.includes("public")
+      && method.modifiers.includes("instance")
+      && !method.isConstructor
+      && semanticAttribute(method.attributes, "NonAction") === null;
+  }
+
+  viewInvocation(
+    action: ActionInfo,
+    call: CallGraphEntry,
+  ): { decision: SemanticDecision; fact: SemanticInvocationFacts | null } {
+    if (!this.usable(action.controller.project) || !this.facts || !action.semanticMethod) {
+      return this.fallback({ decision: "fallback", fact: null });
+    }
+    const semanticMethod = action.semanticMethod;
+    const candidates = this.facts.invocations.filter((candidate) =>
+      normalizePath(candidate.projectFile) === action.controller.project.projectFile
+      && normalizePath(candidate.filePath) === action.controller.file.path
+      && candidate.containingType === semanticMethod.containingType
+      && candidate.containingMethod === semanticMethod.methodName
+      && candidate.invocationName === "View"
+      && candidate.lineRange[0] === call.lineNumber);
+    const fact = candidates.find((candidate) =>
+      candidate.arguments.length === (call.arguments?.length ?? 0)
+      && candidate.arguments.every((argument, index) => argument === call.arguments?.[index]))
+      ?? (candidates.length === 1 ? candidates[0] : null);
+    if (!fact || !fact.resolved) {
+      return this.fallback({ decision: "fallback", fact });
+    }
+    const confirmed = fact.targetKind === "instance-method"
+      && fact.symbolName.startsWith(`${MVC_NAMESPACE}.Controller.View(`);
+    return { decision: confirmed ? "confirmed" : "denied", fact };
+  }
+}
 
 function normalizePath(path: string): string {
   return posix.normalize(path.replace(/\\/g, "/").replace(/^\.\//, ""));
@@ -282,6 +432,7 @@ async function parseCSharpFiles(
 function buildIndexes(
   parsedFiles: ParsedCSharpFile[],
   projects: WebProject[],
+  factsResolver: FactsResolver,
   stats: Record<string, number>,
   warnings: string[],
 ): { controllers: ControllerInfo[]; actions: ActionInfo[]; types: TypeInfo[] } {
@@ -294,13 +445,25 @@ function buildIndexes(
     if (!project) continue;
     for (const declaration of file.structure.classes) {
       types.push({ project, path: file.path, declaration });
-      if (hasAttribute(declaration, "noncontroller")) continue;
-      const explicit = hasAttribute(declaration, "controller");
-      if (!declaration.name.endsWith("Controller") && !explicit) continue;
+      const controllerDecision = factsResolver.controller(project, file, declaration);
+      if (controllerDecision === "denied") continue;
+      if (controllerDecision === "fallback") {
+        if (hasAttribute(declaration, "noncontroller")) continue;
+        const explicit = hasAttribute(declaration, "controller");
+        if (!declaration.name.endsWith("Controller") && !explicit) continue;
+      }
       const controllerName = declaration.name.endsWith("Controller")
         ? declaration.name.slice(0, -"Controller".length)
         : declaration.name;
-      const classArea = firstAttributeString(declaration, "area");
+      const semanticClassArea = factsResolver.typeAttributeString(
+        project,
+        file,
+        declaration,
+        "Area",
+      );
+      const classArea = semanticClassArea.observed
+        ? semanticClassArea.value
+        : firstAttributeString(declaration, "area");
       const controller: ControllerInfo = {
         project,
         file,
@@ -326,11 +489,20 @@ function buildIndexes(
           method.lineRange[0] < declaration.lineRange[0]
           || method.lineRange[1] > declaration.lineRange[1]
         ) continue;
-        const modifiers = method.modifiers ?? [];
-        if (!modifiers.includes("public") || modifiers.includes("static")) continue;
-        if (hasAttribute(method, "nonaction")) continue;
-        const actionName = firstAttributeString(method, "actionname") ?? method.name;
-        const area = firstAttributeString(method, "area") ?? classArea;
+        const semanticMethod = factsResolver.method(project, file, declaration, method);
+        if (semanticMethod) {
+          if (!factsResolver.isAction(semanticMethod)) continue;
+        } else {
+          const modifiers = method.modifiers ?? [];
+          if (!modifiers.includes("public") || modifiers.includes("static")) continue;
+          if (hasAttribute(method, "nonaction")) continue;
+        }
+        const actionName = semanticMethod
+          ? factsResolver.methodAttributeString(semanticMethod, "ActionName") ?? method.name
+          : firstAttributeString(method, "actionname") ?? method.name;
+        const area = semanticMethod
+          ? factsResolver.methodAttributeString(semanticMethod, "Area") ?? classArea
+          : firstAttributeString(method, "area") ?? classArea;
         const key = actionKey(project.root, area, controllerName, actionName);
         actions.push({
           controller,
@@ -339,6 +511,7 @@ function buildIndexes(
           area,
           key,
           nodeId: `func:${file.path}:${method.name}`,
+          semanticMethod,
         });
         stats.actionsScanned++;
         if (area) stats.areaActions++;
@@ -388,6 +561,7 @@ function actionViewCandidates(action: ActionInfo, viewName: string): string[] {
 
 function resolveActionViews(
   actions: ActionInfo[],
+  factsResolver: FactsResolver,
   allPaths: Map<string, string[]>,
   customViewLocations: Set<string>,
   nodes: FrameworkNodeCandidate[],
@@ -419,12 +593,20 @@ function resolveActionViews(
       && call.lineNumber <= action.method.lineRange[1]);
     for (const call of calls) {
       stats.actionViewCandidates++;
+      const semanticInvocation = factsResolver.viewInvocation(action, call);
+      if (semanticInvocation.decision === "denied") continue;
+      const invocationArguments = semanticInvocation.decision === "confirmed"
+        ? semanticInvocation.fact?.arguments ?? []
+        : call.arguments ?? [];
       let viewName = action.actionName;
-      if ((call.arguments?.length ?? 0) > 0) {
-        const literal = stringLiteral(call.arguments?.[0]);
+      if (invocationArguments.length > 0) {
+        const literal = stringLiteral(invocationArguments[0]);
         if (literal === null) continue;
         viewName = literal;
       }
+      const invocationLine = semanticInvocation.decision === "confirmed"
+        ? semanticInvocation.fact?.lineRange[0] ?? call.lineNumber
+        : call.lineNumber;
       const resolved = uniquePath(actionViewCandidates(action, viewName), allPaths);
       if (resolved.ambiguous) {
         stats.actionViewsAmbiguous++;
@@ -446,7 +628,7 @@ function resolveActionViews(
         evidence: {
           rule: "aspnet-mvc-view-discovery",
           filePath: action.controller.file.path,
-          lineRange: [call.lineNumber, call.lineNumber],
+          lineRange: [invocationLine, invocationLine],
         },
       });
       addUniqueRelation(relations, relationKeys, {
@@ -458,7 +640,7 @@ function resolveActionViews(
         evidence: {
           rule: "aspnet-mvc-view-discovery",
           filePath: action.controller.file.path,
-          lineRange: [call.lineNumber, call.lineNumber],
+          lineRange: [invocationLine, invocationLine],
         },
       });
     }
@@ -763,6 +945,7 @@ export const aspnetProvider: FrameworkRelationProvider = {
     const dependencyKeys = new Set<string>();
     const nodeKeys = new Set<string>();
     const relationKeys = new Set<string>();
+    const factsResolver = new FactsResolver(context.semanticFacts, stats);
 
     const projects = await detectWebProjects(context);
     stats.webProjectsDetected = projects.length;
@@ -771,7 +954,13 @@ export const aspnetProvider: FrameworkRelationProvider = {
     }
 
     const parsedFiles = await parseCSharpFiles(context, projects);
-    const { actions, types } = buildIndexes(parsedFiles, projects, stats, warnings);
+    const { actions, types } = buildIndexes(
+      parsedFiles,
+      projects,
+      factsResolver,
+      stats,
+      warnings,
+    );
     const pathsByLower = new Map<string, string[]>();
     for (const file of context.files) {
       const path = normalizePath(file.path);
@@ -788,6 +977,7 @@ export const aspnetProvider: FrameworkRelationProvider = {
 
     resolveActionViews(
       actions,
+      factsResolver,
       pathsByLower,
       customViewLocations,
       nodes,
