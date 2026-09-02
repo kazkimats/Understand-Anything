@@ -202,30 +202,50 @@ export function semanticToolCacheDir(uaDir, version) {
   return join(uaDir, 'tmp', 'semantic-facts-csharp', hash);
 }
 
-function buildSemanticFactsTool(cacheDir, version) {
+export function semanticFactsBuildProperties(cacheDir, version) {
   const targetFramework = semanticFactsTargetFramework(version);
   if (!targetFramework) return null;
-  const outputDir = join(cacheDir, 'out');
-  const toolDll = join(outputDir, 'semantic-facts.dll');
-  if (existsSync(toolDll)) return toolDll;
-  mkdirSync(cacheDir, { recursive: true });
   const intermediateDir = `${join(cacheDir, 'obj')}/`;
-  const result = spawnSync('dotnet', [
-    'build', SEMANTIC_FACTS_PROJECT,
-    '--configuration', 'Release',
-    '--output', outputDir,
-    '--nologo',
-    '--verbosity', 'quiet',
+  return [
     `-p:TargetFramework=${targetFramework}`,
     `-p:BaseIntermediateOutputPath=${intermediateDir}`,
     `-p:MSBuildProjectExtensionsPath=${intermediateDir}`,
     `-p:RestorePackagesPath=${join(cacheDir, 'packages')}`,
+  ];
+}
+
+function buildSemanticFactsTool(cacheDir, version) {
+  const buildProperties = semanticFactsBuildProperties(cacheDir, version);
+  if (!buildProperties) return null;
+  const outputDir = join(cacheDir, 'out');
+  const toolDll = join(outputDir, 'semantic-facts.dll');
+  if (existsSync(toolDll)) return toolDll;
+  mkdirSync(cacheDir, { recursive: true });
+  const restore = spawnSync('dotnet', [
+    'restore', SEMANTIC_FACTS_PROJECT,
+    '--nologo',
+    '--verbosity', 'quiet',
+    ...buildProperties,
   ], {
     encoding: 'utf-8',
     timeout: SEMANTIC_FACTS_TIMEOUT_MS,
     windowsHide: true,
   });
-  return result.status === 0 && !result.error && existsSync(toolDll) ? toolDll : null;
+  if (restore.status !== 0 || restore.error) return null;
+  const build = spawnSync('dotnet', [
+    'build', SEMANTIC_FACTS_PROJECT,
+    '--no-restore',
+    '--configuration', 'Release',
+    '--output', outputDir,
+    '--nologo',
+    '--verbosity', 'quiet',
+    ...buildProperties,
+  ], {
+    encoding: 'utf-8',
+    timeout: SEMANTIC_FACTS_TIMEOUT_MS,
+    windowsHide: true,
+  });
+  return build.status === 0 && !build.error && existsSync(toolDll) ? toolDll : null;
 }
 
 export function loadCSharpSemanticFacts(scan, root, uaDir, options = {}) {

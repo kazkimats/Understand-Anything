@@ -6,20 +6,14 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
-    <RoslynToolPath>$(MSBuildToolsPath)/DotnetTools/dotnet-format</RoslynToolPath>
+    <CodeAnalysisVersion>5.0.0</CodeAnalysisVersion>
+    <MicrosoftBuildVersion>17.11.31</MicrosoftBuildVersion>
   </PropertyGroup>
 
   <ItemGroup>
-    <Reference Include="Microsoft.Build.Locator" HintPath="$(RoslynToolPath)/Microsoft.Build.Locator.dll" />
-    <Reference Include="Microsoft.CodeAnalysis" HintPath="$(RoslynToolPath)/Microsoft.CodeAnalysis.dll" />
-    <Reference Include="Microsoft.CodeAnalysis.CSharp" HintPath="$(RoslynToolPath)/Microsoft.CodeAnalysis.CSharp.dll" />
-    <Reference Include="Microsoft.CodeAnalysis.Workspaces" HintPath="$(RoslynToolPath)/Microsoft.CodeAnalysis.Workspaces.dll" />
-    <Reference Include="Microsoft.CodeAnalysis.CSharp.Workspaces" HintPath="$(RoslynToolPath)/Microsoft.CodeAnalysis.CSharp.Workspaces.dll" />
-    <Reference Include="Microsoft.CodeAnalysis.Workspaces.MSBuild" HintPath="$(RoslynToolPath)/Microsoft.CodeAnalysis.Workspaces.MSBuild.dll" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <Content Include="$(RoslynToolPath)/*.dll" CopyToOutputDirectory="PreserveNewest" Link="%(Filename)%(Extension)" />
-    <Content Include="$(RoslynToolPath)/BuildHost-netcore/**" CopyToOutputDirectory="PreserveNewest" Link="BuildHost-netcore/%(RecursiveDir)%(Filename)%(Extension)" />
+    <PackageReference Include="Microsoft.Build.Locator" Version="1.11.2" />
+    <PackageReference Include="Microsoft.Build.Framework" Version="$(MicrosoftBuildVersion)" ExcludeAssets="runtime" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Workspaces" Version="$(CodeAnalysisVersion)" />
+    <PackageReference Include="Microsoft.CodeAnalysis.Workspaces.MSBuild" Version="$(CodeAnalysisVersion)" />
   </ItemGroup>
 </Project>

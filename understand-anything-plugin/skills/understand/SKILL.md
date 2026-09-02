@@ -292,7 +292,11 @@ Provider failures are warnings and do not prevent other providers from running.
 Set `UA_CSHARP_SEMANTIC_FACTS=1` to opt into the Roslyn semantic-facts layer when
 .NET SDK 8 or newer is available. The tool TFM automatically follows the detected
 SDK major, and the machine must have an SDK capable of building the analyzed
-project's TFM. Without it, framework providers retain their syntax-based behavior.
+project's TFM. The first tool build requires network access to restore NuGet
+packages; later builds reuse the cache under `tmp/semantic-facts-csharp/` and can
+run offline. Roslyn and MSBuild come from version-aligned NuGet packages rather
+than the installed SDK's internal dotnet-format DLLs. Without a compatible SDK,
+framework providers retain their syntax-based behavior.
 
 Build the canonical framework prompt context once for reuse by both analyzers:
 

@@ -116,7 +116,8 @@ internal static class Program
         try
         {
             using var workspace = MSBuildWorkspace.Create();
-            workspace.WorkspaceFailed += (_, args) => workspaceWarnings.Add(args.Diagnostic.Message);
+            workspace.RegisterWorkspaceFailedHandler(
+                args => workspaceWarnings.Add(args.Diagnostic.Message));
             var project = await workspace.OpenProjectAsync(fullProjectFile);
             var compilation = await project.GetCompilationAsync();
             if (compilation is null)
