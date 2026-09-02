@@ -71,15 +71,13 @@ export class FrameworkRegistry {
       if (detected.has(config.id)) continue;
 
       for (const manifestFile of config.manifestFiles) {
-        const content = Object.entries(manifests).find(
-          ([key]) => matchesManifestPattern(key, manifestFile),
-        )?.[1];
-
-        if (!content) continue;
-
-        const contentLower = content.toLowerCase();
-        const found = config.detectionKeywords.some((keyword) =>
-          contentLower.includes(keyword.toLowerCase()),
+        const matchingContents = Object.entries(manifests)
+          .filter(([key]) => matchesManifestPattern(key, manifestFile))
+          .map(([, content]) => content.toLowerCase());
+        const found = matchingContents.some((content) =>
+          config.detectionKeywords.some((keyword) =>
+            content.includes(keyword.toLowerCase()),
+          ),
         );
 
         if (found) {

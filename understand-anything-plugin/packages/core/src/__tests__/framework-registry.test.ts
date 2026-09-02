@@ -131,6 +131,23 @@ describe("FrameworkRegistry", () => {
         }).map((framework) => framework.id),
       ).toEqual(["web-sdk"]);
     });
+
+    it("checks every manifest matched by a wildcard pattern", () => {
+      const registry = new FrameworkRegistry();
+      registry.register({
+        id: "web-sdk",
+        displayName: "Web SDK",
+        languages: ["csharp"],
+        detectionKeywords: ["Microsoft.NET.Sdk.Web"],
+        manifestFiles: ["*.csproj"],
+        promptSnippetPath: "./frameworks/web-sdk.md",
+      });
+
+      expect(registry.detectFrameworks({
+        "src/Library/Library.csproj": '<Project Sdk="Microsoft.NET.Sdk" />',
+        "src/Web/Web.csproj": '<Project Sdk="Microsoft.NET.Sdk.Web" />',
+      }).map((framework) => framework.id)).toEqual(["web-sdk"]);
+    });
   });
 
   it("returns frameworks for all listed languages (cross-language)", () => {
