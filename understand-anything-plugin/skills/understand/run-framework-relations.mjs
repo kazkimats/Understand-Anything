@@ -166,27 +166,45 @@ function semanticFactInputs(scan, root) {
   return { projectFiles, sourceFiles };
 }
 
-function dotnetSdkAvailable() {
+export function parseDotnetVersion(output) {
+  const version = output.trim().split(/\r?\n/, 1)[0]?.trim();
+  if (!version) return null;
+  const major = Number.parseInt(version.split('.')[0], 10);
+  return Number.isInteger(major) ? { major, version } : null;
+}
+
+export function semanticFactsTargetFramework(version) {
+  const detected = parseDotnetVersion(version);
+  return detected ? `net${detected.major}.0` : null;
+}
+
+export function semanticFactsSdkSupported(detected) {
+  return detected !== null && detected.major >= 8;
+}
+
+function detectDotnetVersion() {
   const result = spawnSync('dotnet', ['--version'], {
     encoding: 'utf-8',
     timeout: 5_000,
     windowsHide: true,
   });
-  if (result.status !== 0 || result.error) return false;
-  const major = Number.parseInt(result.stdout.trim().split('.')[0], 10);
-  return Number.isInteger(major) && major >= 8;
+  if (result.status !== 0 || result.error) return null;
+  return parseDotnetVersion(result.stdout);
 }
 
-function semanticToolCacheDir(uaDir) {
+export function semanticToolCacheDir(uaDir, version) {
   const hash = createHash('sha256')
     .update(readFileSync(SEMANTIC_FACTS_PROJECT))
     .update(readFileSync(SEMANTIC_FACTS_SOURCE))
+    .update(version)
     .digest('hex')
     .slice(0, 16);
   return join(uaDir, 'tmp', 'semantic-facts-csharp', hash);
 }
 
-function buildSemanticFactsTool(cacheDir) {
+function buildSemanticFactsTool(cacheDir, version) {
+  const targetFramework = semanticFactsTargetFramework(version);
+  if (!targetFramework) return null;
   const outputDir = join(cacheDir, 'out');
   const toolDll = join(outputDir, 'semantic-facts.dll');
   if (existsSync(toolDll)) return toolDll;
@@ -198,6 +216,7 @@ function buildSemanticFactsTool(cacheDir) {
     '--output', outputDir,
     '--nologo',
     '--verbosity', 'quiet',
+    `-p:TargetFramework=${targetFramework}`,
     `-p:BaseIntermediateOutputPath=${intermediateDir}`,
     `-p:MSBuildProjectExtensionsPath=${intermediateDir}`,
     `-p:RestorePackagesPath=${join(cacheDir, 'packages')}`,
@@ -211,11 +230,14 @@ function buildSemanticFactsTool(cacheDir) {
 
 export function loadCSharpSemanticFacts(scan, root, uaDir, options = {}) {
   const enabled = options.enabled ?? process.env[SEMANTIC_FACTS_FLAG] === '1';
-  if (!enabled || !dotnetSdkAvailable()) return undefined;
+  if (!enabled) return undefined;
+  const dotnetVersion = detectDotnetVersion();
+  if (!semanticFactsSdkSupported(dotnetVersion)) return undefined;
   const { projectFiles, sourceFiles } = semanticFactInputs(scan, root);
   if (projectFiles.length === 0 || sourceFiles.length === 0) return undefined;
   try {
-    const toolDll = buildSemanticFactsTool(semanticToolCacheDir(uaDir));
+    const cacheDir = semanticToolCacheDir(uaDir, dotnetVersion.version);
+    const toolDll = buildSemanticFactsTool(cacheDir, dotnetVersion.version);
     if (!toolDll) return undefined;
     const result = spawnSync('dotnet', [toolDll], {
       input: JSON.stringify({ projectRoot: root, projectFiles, sourceFiles }),

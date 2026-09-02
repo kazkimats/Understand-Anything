@@ -290,8 +290,9 @@ unions their `fileDependencies` into `scan-result.json#importMap`, so Phase 1.5
 batching, `neighborMap`, and `batchImportData` all see framework adjacency.
 Provider failures are warnings and do not prevent other providers from running.
 Set `UA_CSHARP_SEMANTIC_FACTS=1` to opt into the Roslyn semantic-facts layer when
-.NET SDK 8 or newer is available; without it, framework providers retain their
-existing syntax-based behavior.
+.NET SDK 8 or newer is available. The tool TFM automatically follows the detected
+SDK major, and the machine must have an SDK capable of building the analyzed
+project's TFM. Without it, framework providers retain their syntax-based behavior.
 
 Build the canonical framework prompt context once for reuse by both analyzers:
 
