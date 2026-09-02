@@ -1,9 +1,43 @@
 import { describe, it, expect } from "vitest";
-import { FrameworkRegistry } from "../languages/framework-registry.js";
+import {
+  FrameworkRegistry,
+  matchesManifestPattern,
+} from "../languages/framework-registry.js";
 import { djangoConfig } from "../languages/frameworks/django.js";
 import { reactConfig } from "../languages/frameworks/react.js";
 
 describe("FrameworkRegistry", () => {
+  describe("matchesManifestPattern", () => {
+    it.each([
+      "Foo.csproj",
+      "src/Foo.csproj",
+      "src/Admin.Web.csproj",
+      "src\\Admin.Web.csproj",
+    ])("matches wildcard basenames for %s", (filePath) => {
+      expect(matchesManifestPattern(filePath, "*.csproj")).toBe(true);
+    });
+
+    it.each(["Foo.csproj.bak", "Foo.props"])(
+      "rejects non-matching wildcard basenames for %s",
+      (filePath) => {
+        expect(matchesManifestPattern(filePath, "*.csproj")).toBe(false);
+      },
+    );
+
+    it("matches slash-containing patterns against normalized relative paths", () => {
+      expect(matchesManifestPattern("src/Web/Web.csproj", "src/*/Web.csproj")).toBe(true);
+      expect(matchesManifestPattern("other/Web/Web.csproj", "src/*/Web.csproj")).toBe(false);
+    });
+
+    it.each([
+      ["Gemfile", "Gemfile"],
+      ["apps/web/pom.xml", "pom.xml"],
+      ["packages/ui/package.json", "package.json"],
+    ])("preserves exact manifest matching for %s", (filePath, pattern) => {
+      expect(matchesManifestPattern(filePath, pattern)).toBe(true);
+    });
+  });
+
   it("registers and retrieves a framework config by id", () => {
     const registry = new FrameworkRegistry();
     registry.register(djangoConfig);
@@ -78,6 +112,24 @@ describe("FrameworkRegistry", () => {
         "pyproject.toml": '[project]\ndependencies = ["django>=4.0"]',
       });
       expect(detected).toHaveLength(1);
+    });
+
+    it("detects a framework through a wildcard manifest pattern", () => {
+      const registry = new FrameworkRegistry();
+      registry.register({
+        id: "web-sdk",
+        displayName: "Web SDK",
+        languages: ["csharp"],
+        detectionKeywords: ["Microsoft.NET.Sdk.Web"],
+        manifestFiles: ["*.csproj"],
+        promptSnippetPath: "./frameworks/web-sdk.md",
+      });
+
+      expect(
+        registry.detectFrameworks({
+          "src/Admin.Web/Admin.Web.csproj": '<Project Sdk="Microsoft.NET.Sdk.Web" />',
+        }).map((framework) => framework.id),
+      ).toEqual(["web-sdk"]);
     });
   });
 

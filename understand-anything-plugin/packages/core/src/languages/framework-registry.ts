@@ -2,6 +2,27 @@ import { FrameworkConfigSchema } from "./types.js";
 import type { FrameworkConfig } from "./types.js";
 import { builtinFrameworkConfigs } from "./frameworks/index.js";
 
+function normalizeRelativePath(filePath: string): string {
+  return filePath.replace(/\\/g, "/").replace(/^\.\//, "");
+}
+
+function patternToRegExp(pattern: string): RegExp {
+  const escaped = pattern
+    .replace(/[.+?^${}()|[\]\\]/g, "\\$&")
+    .replace(/\*/g, "[^/]*");
+  return new RegExp(`^${escaped}$`);
+}
+
+/** Match a framework manifest pattern without requiring a glob dependency. */
+export function matchesManifestPattern(relativePath: string, pattern: string): boolean {
+  const normalizedPath = normalizeRelativePath(relativePath);
+  const normalizedPattern = normalizeRelativePath(pattern);
+  const candidate = normalizedPattern.includes("/")
+    ? normalizedPath
+    : normalizedPath.split("/").pop() ?? normalizedPath;
+  return patternToRegExp(normalizedPattern).test(candidate);
+}
+
 /**
  * Registry for framework configurations. Provides detection of frameworks
  * from manifest file contents and lookup by id or language.
@@ -50,9 +71,8 @@ export class FrameworkRegistry {
       if (detected.has(config.id)) continue;
 
       for (const manifestFile of config.manifestFiles) {
-        // Match manifest entries by filename (basename match)
         const content = Object.entries(manifests).find(
-          ([key]) => key === manifestFile || key.endsWith(`/${manifestFile}`),
+          ([key]) => matchesManifestPattern(key, manifestFile),
         )?.[1];
 
         if (!content) continue;

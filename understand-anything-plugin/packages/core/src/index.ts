@@ -64,6 +64,7 @@ export { PluginRegistry } from "./plugins/registry.js";
 export {
   LanguageRegistry,
   FrameworkRegistry,
+  matchesManifestPattern,
   builtinLanguageConfigs,
   builtinFrameworkConfigs,
   LanguageConfigSchema,
