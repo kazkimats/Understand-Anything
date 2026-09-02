@@ -17,6 +17,39 @@ const analysis = (overrides = {}) => ({
 });
 
 describe("extract-structure buildResult", () => {
+  it("passes C# declaration and invocation metadata through to analyzer output", () => {
+    const attributes = [{ name: "Area", arguments: ['"Admin"'], lineRange: [1, 1] }];
+    const result = buildResult(
+      file({ path: "Controllers/HomeController.cs", language: "csharp" }),
+      10,
+      8,
+      analysis({
+        functions: [{
+          name: "Index",
+          lineRange: [4, 8],
+          params: [],
+          kind: "method",
+          attributes,
+          modifiers: ["public"],
+        }],
+        classes: [{
+          name: "HomeController",
+          lineRange: [1, 10],
+          methods: ["Index"],
+          properties: [],
+          attributes,
+          modifiers: ["public"],
+        }],
+      }),
+      [{ caller: "Index", callee: "View", lineNumber: 5, arguments: ['"Detail"'] }],
+      {},
+    );
+
+    expect(result.functions[0]).toMatchObject({ attributes, modifiers: ["public"] });
+    expect(result.classes[0]).toMatchObject({ attributes, modifiers: ["public"] });
+    expect(result.callGraph[0].arguments).toEqual(['"Detail"']);
+  });
+
   describe("language pass-through", () => {
     it("preserves the input language on the output", () => {
       const result = buildResult(file({ language: "python" }), 10, 8, analysis(), null, {});

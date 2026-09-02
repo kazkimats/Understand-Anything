@@ -52,6 +52,14 @@ function isTypedFieldArray(value) {
     entry.isStatic === undefined || typeof entry.isStatic === 'boolean');
 }
 
+function isAttributeArray(value) {
+  return Array.isArray(value) && value.every(entry =>
+    isPlainObject(entry) &&
+    typeof entry.name === 'string' &&
+    isStringArray(entry.arguments) &&
+    hasValidOptionalField(entry, 'lineRange', isLineRange));
+}
+
 function hasValidOptionalField(value, field, validator) {
   return value[field] === undefined || validator(value[field]);
 }
@@ -68,6 +76,8 @@ const STRUCTURE_ENTRY_VALIDATORS = {
     isStringArray(entry.params) &&
     hasValidOptionalField(entry, 'returnType', value => typeof value === 'string') &&
     hasValidOptionalField(entry, 'typedParams', isTypedNameArray) &&
+    hasValidOptionalField(entry, 'attributes', isAttributeArray) &&
+    hasValidOptionalField(entry, 'modifiers', isStringArray) &&
     hasValidOptionalField(entry, 'kind', value =>
       ['method', 'constructor'].includes(value)),
   classes: entry =>
@@ -81,7 +91,9 @@ const STRUCTURE_ENTRY_VALIDATORS = {
     hasValidOptionalField(entry, 'fullName', value => typeof value === 'string') &&
     hasValidOptionalField(entry, 'baseTypes', isStringArray) &&
     hasValidOptionalField(entry, 'primaryConstructorParams', isTypedNameArray) &&
-    hasValidOptionalField(entry, 'fields', isTypedFieldArray),
+    hasValidOptionalField(entry, 'fields', isTypedFieldArray) &&
+    hasValidOptionalField(entry, 'attributes', isAttributeArray) &&
+    hasValidOptionalField(entry, 'modifiers', isStringArray),
   imports: entry =>
     typeof entry.source === 'string' &&
     isStringArray(entry.specifiers) &&
@@ -143,7 +155,8 @@ function isValidCallGraph(callGraph) {
     isPlainObject(entry) &&
     typeof entry.caller === 'string' &&
     typeof entry.callee === 'string' &&
-    isFiniteInteger(entry.lineNumber));
+    isFiniteInteger(entry.lineNumber) &&
+    hasValidOptionalField(entry, 'arguments', isStringArray));
 }
 
 function mapCallGraph(callGraph) {
@@ -152,6 +165,7 @@ function mapCallGraph(callGraph) {
         caller: entry.caller,
         callee: entry.callee,
         lineNumber: entry.lineNumber,
+        ...(entry.arguments ? { arguments: entry.arguments } : {}),
       }))
     : null;
 }
@@ -263,6 +277,8 @@ export function buildResult(file, totalLines, nonEmptyLines, analysis, callGraph
       ...(fn.returnType ? { returnType: fn.returnType } : {}),
       ...(fn.typedParams ? { typedParams: fn.typedParams } : {}),
       ...(fn.kind ? { kind: fn.kind } : {}),
+      ...(fn.attributes ? { attributes: fn.attributes } : {}),
+      ...(fn.modifiers ? { modifiers: fn.modifiers } : {}),
     }));
   }
 
@@ -279,6 +295,8 @@ export function buildResult(file, totalLines, nonEmptyLines, analysis, callGraph
       ...(cls.baseTypes ? { baseTypes: cls.baseTypes } : {}),
       ...(cls.primaryConstructorParams ? { primaryConstructorParams: cls.primaryConstructorParams } : {}),
       ...(cls.fields ? { fields: cls.fields } : {}),
+      ...(cls.attributes ? { attributes: cls.attributes } : {}),
+      ...(cls.modifiers ? { modifiers: cls.modifiers } : {}),
     }));
   }
 

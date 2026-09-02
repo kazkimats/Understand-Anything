@@ -1,5 +1,6 @@
 import type {
   CallGraphEntry,
+  AttributeInfo,
   StructuralAnalysis,
   TypedField,
   TypedParameter,
@@ -61,6 +62,38 @@ function hasModifier(node: TreeSitterNode, modifier: string): boolean {
     }
   }
   return false;
+}
+
+function extractModifiers(node: TreeSitterNode): string[] {
+  return findChildren(node, "modifier")
+    .map((modifier) => modifier.text.trim())
+    .filter(Boolean);
+}
+
+function extractAttributes(node: TreeSitterNode): AttributeInfo[] {
+  const attributes: AttributeInfo[] = [];
+  for (const list of findChildren(node, "attribute_list")) {
+    for (const attribute of findChildren(list, "attribute")) {
+      const name = attribute.childForFieldName("name")?.text;
+      if (!name) continue;
+      const argumentsNode = findChild(attribute, "attribute_argument_list");
+      const args = argumentsNode
+        ? findChildren(argumentsNode, "attribute_argument").map((argument) => argument.text)
+        : [];
+      attributes.push({
+        name,
+        arguments: args,
+        lineRange: [attribute.startPosition.row + 1, attribute.endPosition.row + 1],
+      });
+    }
+  }
+  return attributes;
+}
+
+function extractInvocationArguments(node: TreeSitterNode): string[] {
+  const argumentsNode = node.childForFieldName("arguments");
+  if (!argumentsNode) return [];
+  return findChildren(argumentsNode, "argument").map((argument) => argument.text);
 }
 
 type CSharpUsingInfo = {
@@ -228,6 +261,7 @@ export class CSharpExtractor implements LanguageExtractor {
               caller: functionStack[functionStack.length - 1],
               callee,
               lineNumber: node.startPosition.row + 1,
+              arguments: extractInvocationArguments(node),
             });
           }
         }
@@ -407,6 +441,8 @@ export class CSharpExtractor implements LanguageExtractor {
       baseTypes: extractBaseTypes(node),
       primaryConstructorParams,
       fields,
+      attributes: extractAttributes(node),
+      modifiers: extractModifiers(node),
     });
 
     if (hasModifier(node, "public")) {
@@ -450,6 +486,8 @@ export class CSharpExtractor implements LanguageExtractor {
             returnType: extractReturnType(methodNode),
             typedParams,
             kind: "method",
+            attributes: extractAttributes(methodNode),
+            modifiers: extractModifiers(methodNode),
           });
         }
       }
@@ -477,6 +515,8 @@ export class CSharpExtractor implements LanguageExtractor {
       namespace,
       fullName: namespace ? `${namespace}.${nameNode.text}` : nameNode.text,
       baseTypes: extractBaseTypes(node),
+      attributes: extractAttributes(node),
+      modifiers: extractModifiers(node),
     });
 
     if (hasModifier(node, "public")) {
@@ -549,6 +589,8 @@ export class CSharpExtractor implements LanguageExtractor {
       returnType,
       typedParams,
       kind: "method",
+      attributes: extractAttributes(node),
+      modifiers: extractModifiers(node),
     });
 
     if (hasModifier(node, "public")) {
@@ -583,6 +625,8 @@ export class CSharpExtractor implements LanguageExtractor {
       params,
       typedParams,
       kind: "constructor",
+      attributes: extractAttributes(node),
+      modifiers: extractModifiers(node),
       // Constructors have no return type
     });
 

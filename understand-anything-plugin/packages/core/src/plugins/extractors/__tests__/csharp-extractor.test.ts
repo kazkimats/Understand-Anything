@@ -38,6 +38,32 @@ describe("CSharpExtractor", () => {
   // ---- Methods/Constructors (mapped to functions) ----
 
   describe("extractStructure - functions (methods & constructors)", () => {
+    it("preserves framework-neutral attributes and modifiers", () => {
+      const { tree, parser, root } = parse(`[Area("Admin")]
+[Route("[area]/[controller]")]
+public class UsersController : Controller {
+    [HttpGet("{id}")]
+    [ActionName("List")]
+    public virtual IActionResult Index() { return View(); }
+}
+`);
+      const result = extractor.extractStructure(root);
+
+      expect(result.classes[0].attributes).toEqual([
+        { name: "Area", arguments: ['"Admin"'], lineRange: [1, 1] },
+        { name: "Route", arguments: ['"[area]/[controller]"'], lineRange: [2, 2] },
+      ]);
+      expect(result.classes[0].modifiers).toEqual(["public"]);
+      expect(result.functions[0].attributes).toEqual([
+        { name: "HttpGet", arguments: ['"{id}"'], lineRange: [4, 4] },
+        { name: "ActionName", arguments: ['"List"'], lineRange: [5, 5] },
+      ]);
+      expect(result.functions[0].modifiers).toEqual(["public", "virtual"]);
+
+      tree.delete();
+      parser.delete();
+    });
+
     it("extracts methods with params and return types", () => {
       const { tree, parser, root } = parse(`namespace App {
     public class Foo {
@@ -439,6 +465,27 @@ namespace App.Services {
   // ---- Call Graph ----
 
   describe("extractCallGraph", () => {
+    it("preserves invocation arguments", () => {
+      const { tree, parser, root } = parse(`public class HomeController {
+    public IActionResult Index() {
+        View();
+        View("Detail");
+        View("Detail", model);
+    }
+}
+`);
+      const result = extractor.extractCallGraph(root);
+
+      expect(result.map((call) => call.arguments)).toEqual([
+        [],
+        ['"Detail"'],
+        ['"Detail"', "model"],
+      ]);
+
+      tree.delete();
+      parser.delete();
+    });
+
     it("extracts simple method calls", () => {
       const { tree, parser, root } = parse(`namespace App {
     public class Foo {

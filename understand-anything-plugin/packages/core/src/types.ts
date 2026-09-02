@@ -192,6 +192,12 @@ export interface TypedField {
   isStatic?: boolean;
 }
 
+export interface AttributeInfo {
+  name: string;
+  arguments: string[];
+  lineRange?: [number, number];
+}
+
 // Plugin interfaces
 export interface StructuralAnalysis {
   functions: Array<{
@@ -201,6 +207,8 @@ export interface StructuralAnalysis {
     returnType?: string;
     typedParams?: TypedParameter[];
     kind?: "method" | "constructor";
+    attributes?: AttributeInfo[];
+    modifiers?: string[];
   }>;
   classes: Array<{
     name: string;
@@ -213,6 +221,8 @@ export interface StructuralAnalysis {
     baseTypes?: string[];
     primaryConstructorParams?: TypedParameter[];
     fields?: TypedField[];
+    attributes?: AttributeInfo[];
+    modifiers?: string[];
   }>;
   imports: Array<{
     source: string;
@@ -243,6 +253,7 @@ export interface CallGraphEntry {
   caller: string;
   callee: string;
   lineNumber: number;
+  arguments?: string[];
 }
 
 export interface AnalyzerPlugin {
