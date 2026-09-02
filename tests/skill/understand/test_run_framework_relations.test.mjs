@@ -71,6 +71,62 @@ dotnet_diagnostic.CS8019.severity = error
   return { root, intermediate, files };
 }
 
+function createRoslynViewOverloadFixture() {
+  const root = mkdtempSync(join(tmpdir(), 'ua-framework-view-overloads-'));
+  const intermediate = join(root, '.ua', 'intermediate');
+  mkdirSync(join(root, 'Web', 'Controllers'), { recursive: true });
+  mkdirSync(join(root, 'Web', 'Views', 'Home'), { recursive: true });
+  mkdirSync(intermediate, { recursive: true });
+  const files = [
+    { path: 'Web/Web.csproj', language: 'csproj', fileCategory: 'config' },
+    { path: 'Web/Controllers/HomeController.cs', language: 'csharp', fileCategory: 'code' },
+    { path: 'Web/Program.cs', language: 'csharp', fileCategory: 'code' },
+    { path: 'Web/Views/Home/Index.cshtml', language: 'razor', fileCategory: 'markup' },
+    { path: 'Web/Views/Home/Model.cshtml', language: 'razor', fileCategory: 'markup' },
+    { path: 'Web/Views/Home/Detail.cshtml', language: 'razor', fileCategory: 'markup' },
+    { path: 'Web/Views/Home/Dynamic.cshtml', language: 'razor', fileCategory: 'markup' },
+    { path: 'Web/Views/Home/DynamicModel.cshtml', language: 'razor', fileCategory: 'markup' },
+  ];
+  writeFileSync(join(root, files[0].path), `<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+  </PropertyGroup>
+  <ItemGroup><FrameworkReference Include="Microsoft.AspNetCore.App" /></ItemGroup>
+</Project>
+`);
+  writeFileSync(join(root, files[1].path), `using Microsoft.AspNetCore.Mvc;
+namespace Web.Controllers;
+public sealed class HomeViewModel { }
+public class HomeController : Controller
+{
+    public IActionResult Index() => View();
+    public IActionResult Model() => View(new HomeViewModel());
+    public IActionResult Literal() => View("Detail");
+    public IActionResult LiteralModel() => View("Detail", new HomeViewModel());
+    public IActionResult Dynamic()
+    {
+        string viewName = GetViewName();
+        return View(viewName);
+    }
+    public IActionResult DynamicModel()
+    {
+        string viewName = GetViewName();
+        return View(viewName, new HomeViewModel());
+    }
+    private string GetViewName() => "Dynamic";
+}
+`);
+  writeFileSync(join(root, files[2].path), 'System.Console.WriteLine("top-level");\n');
+  for (const file of files.slice(3)) writeFileSync(join(root, file.path), `<h1>${file.path}</h1>\n`);
+  writeFileSync(join(intermediate, 'scan-result.json'), JSON.stringify({
+    frameworks: ['aspnet'],
+    files,
+    importMap: {},
+  }));
+  return { root, intermediate };
+}
+
 describe('run-framework-relations.mjs', () => {
   it('selects the semantic-facts TFM from the detected SDK major', async () => {
     const {
@@ -264,6 +320,50 @@ describe('run-framework-relations.mjs', () => {
       expect(fallbackScan.importMap['Web/Areas/Admin/Controllers/HomeController.cs']).toContain(
         'Web/Areas/Admin/Views/Home/Detail.cshtml',
       );
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  }, 90_000);
+
+  it.skipIf(!hasDotnet8)('resolves MVC view names from real Roslyn overload facts', async () => {
+    const fixture = createRoslynViewOverloadFixture();
+    try {
+      const { run } = await import(pathToFileURL(RUNNER).href);
+      await run(fixture.root, { enableCSharpSemanticFacts: true });
+      const scan = JSON.parse(readFileSync(
+        join(fixture.intermediate, 'scan-result.json'),
+        'utf-8',
+      ));
+      const facts = JSON.parse(readFileSync(
+        join(fixture.intermediate, 'ua-semantic-facts-csharp.json'),
+        'utf-8',
+      ));
+      const artifact = JSON.parse(readFileSync(
+        join(fixture.intermediate, 'ua-framework-relations-aspnet.json'),
+        'utf-8',
+      ));
+      const targets = scan.importMap['Web/Controllers/HomeController.cs'];
+      const viewSymbols = facts.invocations
+        .filter((invocation) => invocation.invocationName === 'View')
+        .map((invocation) => invocation.symbolName);
+
+      expect(viewSymbols).toEqual(expect.arrayContaining([
+        'Microsoft.AspNetCore.Mvc.Controller.View()',
+        'Microsoft.AspNetCore.Mvc.Controller.View(object)',
+        'Microsoft.AspNetCore.Mvc.Controller.View(string)',
+        'Microsoft.AspNetCore.Mvc.Controller.View(string,object)',
+      ]));
+      expect(targets).toEqual(expect.arrayContaining([
+        'Web/Views/Home/Index.cshtml',
+        'Web/Views/Home/Model.cshtml',
+        'Web/Views/Home/Detail.cshtml',
+      ]));
+      expect(targets).not.toContain('Web/Views/Home/Dynamic.cshtml');
+      expect(targets).not.toContain('Web/Views/Home/DynamicModel.cshtml');
+      expect(artifact.stats.actionViewCandidates).toBe(6);
+      expect(artifact.stats.actionViewsResolved).toBe(4);
+      expect(artifact.stats.actionViewsModelFallback).toBe(1);
+      expect(artifact.stats.actionViewsNonLiteralSkipped).toBe(2);
     } finally {
       rmSync(fixture.root, { recursive: true, force: true });
     }

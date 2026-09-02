@@ -104,6 +104,37 @@ function semanticFiles(source: string, views: string[]): Record<string, string> 
 }
 
 describe("aspnetProvider MVC conventions", () => {
+  it("keeps syntax-only View discovery conservative across common argument shapes", async () => {
+    const files = {
+      "Web/Web.csproj": webProject,
+      "Web/Controllers/HomeController.cs": `
+public class HomeController : Controller {
+  public IActionResult Index() { return View(); }
+  public IActionResult Literal() { return View("Detail"); }
+  public IActionResult LiteralModel() { return View("Detail", model); }
+  public IActionResult Model() { return View(viewModel); }
+}
+`,
+      "Web/Views/Home/Index.cshtml": "Index\n",
+      "Web/Views/Home/Detail.cshtml": "Detail\n",
+      "Web/Views/Home/Model.cshtml": "Model\n",
+    };
+
+    const result = await aspnetProvider.analyze(context(files));
+    const targets = result.fileDependencies
+      .filter((dependency) => dependency.kind === "action_view")
+      .map((dependency) => dependency.targetPath);
+
+    expect(targets).toEqual([
+      "Web/Views/Home/Index.cshtml",
+      "Web/Views/Home/Detail.cshtml",
+    ]);
+    expect(result.stats.actionViewCandidates).toBe(4);
+    expect(result.stats.actionViewsResolved).toBe(3);
+    expect(result.stats.actionViewsModelFallback).toBe(0);
+    expect(result.stats.actionViewsNonLiteralSkipped).toBe(0);
+  });
+
   it("isolates Areas and web projects while resolving action views", async () => {
     const files = {
       "src/Web/Web.csproj": webProject,
@@ -490,7 +521,7 @@ public class HomeController : Controller {
     const semanticFacts = facts({
       invocation: {
         arguments: ['"Detail"', "model"],
-        symbolName: "Microsoft.AspNetCore.Mvc.Controller.View(System.String,System.Object)",
+        symbolName: "Microsoft.AspNetCore.Mvc.Controller.View(string,object)",
       },
     });
 

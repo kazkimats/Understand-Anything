@@ -44,5 +44,6 @@
 - Areas are independent feature partitions. Prefer method `[Area]`, then class `[Area]`; do not infer routing Area from the directory alone.
 - `[ActionName]` changes an action's effective public identity, while `[NonAction]` and `[NonController]` remove candidates.
 - Standard view discovery checks controller-specific locations before shared locations, with Area locations preceding root `Views/Shared`.
+- With Roslyn semantic facts, resolve `View()` and `View(object model)` to the action-named view, and use a view name only when the resolved `View(string...)` overload receives a string literal. Without facts, keep syntax-only discovery conservative and skip non-literal first arguments.
 - Razor Pages (`Pages/`, `@page`, `PageModel`, `asp-page`), Blazor, Minimal APIs, View Components, and custom view-location expanders are outside the MVC convention rules.
 - Dynamic route, controller, action, model, and view names are ambiguous evidence and must be skipped rather than guessed.
