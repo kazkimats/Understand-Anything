@@ -92,6 +92,10 @@ const EMPTY_STATS = {
   actionViewsAmbiguous: 0,
   actionViewsModelFallback: 0,
   actionViewsNonLiteralSkipped: 0,
+  actionRedirectsResolved: 0,
+  actionRedirectsSkipped: 0,
+  actionRedirectsAmbiguous: 0,
+  actionRedirectsMissing: 0,
   viewPartialsResolved: 0,
   viewPartialsAmbiguous: 0,
   viewPartialsMissing: 0,
@@ -256,6 +260,28 @@ class FactsResolver {
     const confirmed = fact.targetKind === "instance-method"
       && fact.symbolName.startsWith(`${MVC_NAMESPACE}.Controller.View(`);
     return { decision: confirmed ? "confirmed" : "denied", fact };
+  }
+
+  redirectInvocations(action: ActionInfo): SemanticInvocationFacts[] {
+    if (!this.usable(action.controller.project) || !this.facts || !action.semanticMethod) {
+      return [];
+    }
+    const semanticMethod = action.semanticMethod;
+    return this.facts.invocations.filter((candidate) =>
+      normalizePath(candidate.projectFile) === action.controller.project.projectFile
+      && normalizePath(candidate.filePath) === action.controller.file.path
+      && candidate.containingType === semanticMethod.containingType
+      && candidate.containingMethod === semanticMethod.methodName
+      && (candidate.invocationName === "RedirectToAction"
+        || candidate.invocationName === "RedirectToActionPermanent")
+      && candidate.lineRange[0] >= action.method.lineRange[0]
+      && candidate.lineRange[1] <= action.method.lineRange[1]
+      && candidate.resolved
+      && candidate.targetKind === "instance-method"
+      && (["ControllerBase", "Controller"] as const).some((type) =>
+        candidate.symbolName.startsWith(
+          `${MVC_NAMESPACE}.${type}.${candidate.invocationName}(`,
+        )));
   }
 }
 
@@ -710,6 +736,113 @@ function resolveActionViews(
           filePath: action.controller.file.path,
           lineRange: [invocationLine, invocationLine],
         },
+      });
+    }
+  }
+}
+
+function anonymousArea(argument: string): { valid: boolean; area: string | null } {
+  const trimmed = argument.trim();
+  if (!/^new\s*\{[\s\S]*\}$/.test(trimmed)) return { valid: false, area: null };
+  const area = trimmed.match(/(?:^|[,{])\s*area\s*=\s*([^,}]+)/i);
+  if (!area) return { valid: true, area: null };
+  const literal = stringLiteral(area[1]);
+  return literal === null
+    ? { valid: false, area: null }
+    : { valid: true, area: literal || null };
+}
+
+function redirectParameters(fact: SemanticInvocationFacts): string | null {
+  const prefix = (["ControllerBase", "Controller"] as const)
+    .map((type) => `${MVC_NAMESPACE}.${type}.${fact.invocationName}(`)
+    .find((candidate) => fact.symbolName.startsWith(candidate));
+  if (!prefix || !fact.symbolName.endsWith(")")) return null;
+  return fact.symbolName.slice(prefix.length, -1);
+}
+
+function resolveActionRedirects(
+  actions: ActionInfo[],
+  factsResolver: FactsResolver,
+  actionsByKey: Map<string, ActionInfo[]>,
+  dependencies: FrameworkFileDependency[],
+  dependencyKeys: Set<string>,
+  relations: FrameworkRelation[],
+  relationKeys: Set<string>,
+  stats: Record<string, number>,
+): void {
+  for (const action of actions) {
+    for (const fact of factsResolver.redirectInvocations(action)) {
+      const parameters = redirectParameters(fact);
+      let controller = action.controller.controllerName;
+      let area = action.area;
+      let routeValuesIndex: number | null = null;
+      switch (parameters) {
+        case "string":
+          break;
+        case "string,string":
+          controller = stringLiteral(fact.arguments[1]) ?? "";
+          break;
+        case "string,object":
+          routeValuesIndex = 1;
+          break;
+        case "string,string,object":
+          controller = stringLiteral(fact.arguments[1]) ?? "";
+          routeValuesIndex = 2;
+          break;
+        default:
+          stats.actionRedirectsSkipped++;
+          continue;
+      }
+
+      const actionName = stringLiteral(fact.arguments[0]);
+      if (actionName === null || controller === "") {
+        stats.actionRedirectsSkipped++;
+        continue;
+      }
+      if (routeValuesIndex !== null) {
+        const routeValues = anonymousArea(fact.arguments[routeValuesIndex] ?? "");
+        if (!routeValues.valid) {
+          stats.actionRedirectsSkipped++;
+          continue;
+        }
+        if (routeValues.area !== null) area = routeValues.area;
+      }
+
+      const matches = actionsByKey.get(actionKey(
+        action.controller.project.root,
+        area,
+        controller,
+        actionName,
+      )) ?? [];
+      if (matches.length > 1) {
+        stats.actionRedirectsAmbiguous++;
+        continue;
+      }
+      if (matches.length === 0) {
+        stats.actionRedirectsMissing++;
+        continue;
+      }
+
+      const target = matches[0];
+      const evidence = {
+        rule: `aspnet-action-redirect+method=${fact.invocationName}`,
+        filePath: fact.filePath,
+        lineRange: fact.lineRange,
+      };
+      stats.actionRedirectsResolved++;
+      addUniqueDependency(dependencies, dependencyKeys, {
+        sourcePath: action.controller.file.path,
+        targetPath: target.controller.file.path,
+        kind: "action_redirect",
+        evidence,
+      });
+      addUniqueRelation(relations, relationKeys, {
+        kind: "action_redirect",
+        source: { nodeKey: actionNodeKey(action) },
+        target: { nodeKey: actionNodeKey(target) },
+        edgeType: "routes",
+        weight: 1,
+        evidence,
       });
     }
   }
@@ -1206,6 +1339,16 @@ export const aspnetProvider: FrameworkRelationProvider = {
     for (const action of actions) {
       actionsByKey.set(action.key, [...(actionsByKey.get(action.key) ?? []), action]);
     }
+    resolveActionRedirects(
+      actions,
+      factsResolver,
+      actionsByKey,
+      fileDependencies,
+      dependencyKeys,
+      relations,
+      relationKeys,
+      stats,
+    );
     resolveTagHelpers(razorContents, projects, actionsByKey, relations, relationKeys, stats);
 
     return { fileDependencies, nodes, relations, stats, warnings };
