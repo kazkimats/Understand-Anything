@@ -298,6 +298,11 @@ run offline. Roslyn and MSBuild come from version-aligned NuGet packages rather
 than the installed SDK's internal dotnet-format DLLs. Without a compatible SDK,
 framework providers retain their syntax-based behavior.
 
+Each dotnet phase (restore, build, and tool execution) has a default 120-second
+timeout. For large projects, raise it with
+`UA_CSHARP_SEMANTIC_FACTS_TIMEOUT_MS` (milliseconds). If a phase times out, the
+runner writes a warning to stderr and falls back to syntax-based behavior.
+
 Build the canonical framework prompt context once for reuse by both analyzers:
 
 ```bash

@@ -40,7 +40,8 @@ const {
 } = core;
 
 const SEMANTIC_FACTS_FLAG = 'UA_CSHARP_SEMANTIC_FACTS';
-const SEMANTIC_FACTS_TIMEOUT_MS = 60_000;
+const SEMANTIC_FACTS_DEFAULT_TIMEOUT_MS = 120_000;
+const SEMANTIC_FACTS_TIMEOUT_ENV = 'UA_CSHARP_SEMANTIC_FACTS_TIMEOUT_MS';
 const SEMANTIC_FACTS_PROJECT = join(SKILL_DIR, 'dotnet', 'semantic-facts', 'semantic-facts.csproj');
 const SEMANTIC_FACTS_SOURCE = join(SKILL_DIR, 'dotnet', 'semantic-facts', 'Program.cs');
 
@@ -173,6 +174,18 @@ export function parseDotnetVersion(output) {
   return Number.isInteger(major) ? { major, version } : null;
 }
 
+export function resolveSemanticFactsTimeoutMs(rawEnv) {
+  const value = rawEnv[SEMANTIC_FACTS_TIMEOUT_ENV];
+  if (value === undefined || value === '') return SEMANTIC_FACTS_DEFAULT_TIMEOUT_MS;
+  const timeoutMs = Number.parseInt(value, 10);
+  if (Number.isInteger(timeoutMs) && timeoutMs >= 1_000) return timeoutMs;
+  process.stderr.write(
+    `Warning: run-framework-relations: invalid ${SEMANTIC_FACTS_TIMEOUT_ENV} `
+    + `"${value}" (expected an integer >= 1000), using ${SEMANTIC_FACTS_DEFAULT_TIMEOUT_MS}\n`,
+  );
+  return SEMANTIC_FACTS_DEFAULT_TIMEOUT_MS;
+}
+
 export function semanticFactsTargetFramework(version) {
   const detected = parseDotnetVersion(version);
   return detected ? `net${detected.major}.0` : null;
@@ -233,7 +246,7 @@ export function semanticFactsBuildArguments(cacheDir, version) {
   };
 }
 
-function buildSemanticFactsTool(cacheDir, version) {
+function buildSemanticFactsTool(cacheDir, version, timeoutMs) {
   const args = semanticFactsBuildArguments(cacheDir, version);
   if (!args) return null;
   const toolDll = join(args.outputDir, 'semantic-facts.dll');
@@ -241,37 +254,69 @@ function buildSemanticFactsTool(cacheDir, version) {
   mkdirSync(cacheDir, { recursive: true });
   const restore = spawnSync('dotnet', args.restore, {
     encoding: 'utf-8',
-    timeout: SEMANTIC_FACTS_TIMEOUT_MS,
+    timeout: timeoutMs,
     windowsHide: true,
   });
-  if (restore.status !== 0 || restore.error) return null;
+  if (restore.status !== 0 || restore.error) {
+    const outcome = restore.error?.code === 'ETIMEDOUT'
+      ? `timed out after ${timeoutMs}ms`
+      : 'failed during restore';
+    process.stderr.write(
+      `Warning: run-framework-relations: C# semantic facts tool build ${outcome} `
+      + `(raise ${SEMANTIC_FACTS_TIMEOUT_ENV})\n`,
+    );
+    return null;
+  }
   const build = spawnSync('dotnet', args.build, {
     encoding: 'utf-8',
-    timeout: SEMANTIC_FACTS_TIMEOUT_MS,
+    timeout: timeoutMs,
     windowsHide: true,
   });
-  return build.status === 0 && !build.error && existsSync(toolDll) ? toolDll : null;
+  if (build.status !== 0 || build.error || !existsSync(toolDll)) {
+    const outcome = build.error?.code === 'ETIMEDOUT'
+      ? `timed out after ${timeoutMs}ms`
+      : 'failed during build';
+    process.stderr.write(
+      `Warning: run-framework-relations: C# semantic facts tool build ${outcome} `
+      + `(raise ${SEMANTIC_FACTS_TIMEOUT_ENV})\n`,
+    );
+    return null;
+  }
+  return toolDll;
 }
 
 export function loadCSharpSemanticFacts(scan, root, uaDir, options = {}) {
   const enabled = options.enabled ?? process.env[SEMANTIC_FACTS_FLAG] === '1';
   if (!enabled) return undefined;
+  // Programmatic options are trusted; the user-facing environment value is validated.
+  const timeoutMs = options.timeoutMs ?? resolveSemanticFactsTimeoutMs(process.env);
   const dotnetVersion = detectDotnetVersion();
   if (!semanticFactsSdkSupported(dotnetVersion)) return undefined;
   const { projectFiles, sourceFiles } = semanticFactInputs(scan, root);
   if (projectFiles.length === 0 || sourceFiles.length === 0) return undefined;
   try {
     const cacheDir = semanticToolCacheDir(uaDir, dotnetVersion.version);
-    const toolDll = buildSemanticFactsTool(cacheDir, dotnetVersion.version);
+    const toolDll = buildSemanticFactsTool(cacheDir, dotnetVersion.version, timeoutMs);
     if (!toolDll) return undefined;
     const result = spawnSync('dotnet', [toolDll], {
       input: JSON.stringify({ projectRoot: root, projectFiles, sourceFiles }),
       encoding: 'utf-8',
-      timeout: SEMANTIC_FACTS_TIMEOUT_MS,
+      timeout: timeoutMs,
       maxBuffer: 50 * 1024 * 1024,
       windowsHide: true,
     });
-    if (result.status !== 0 || result.error) return undefined;
+    if (result.status !== 0 || result.error) {
+      if (result.error) {
+        const outcome = result.error.code === 'ETIMEDOUT'
+          ? `timed out after ${timeoutMs}ms`
+          : 'failed to run';
+        process.stderr.write(
+          `Warning: run-framework-relations: C# semantic facts tool ${outcome} `
+          + `(raise ${SEMANTIC_FACTS_TIMEOUT_ENV})\n`,
+        );
+      }
+      return undefined;
+    }
     try {
       return parseCSharpSemanticFactsJson(result.stdout);
     } catch (error) {
@@ -318,6 +363,7 @@ export async function run(projectRoot, options = {}) {
   augmentDeterministicFrameworks(scan, root, frameworkRegistry);
   const semanticFacts = loadCSharpSemanticFacts(scan, root, uaDir, {
     enabled: options.enableCSharpSemanticFacts,
+    timeoutMs: options.semanticFactsTimeoutMs,
   });
   const semanticFactsPath = join(intermediateDir, 'ua-semantic-facts-csharp.json');
   if (semanticFacts) {
