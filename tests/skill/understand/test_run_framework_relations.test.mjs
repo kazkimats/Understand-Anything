@@ -88,6 +88,25 @@ describe('run-framework-relations.mjs', () => {
     );
   });
 
+  it('constructs restore and no-restore build arguments with identical MSBuild properties', async () => {
+    const { semanticFactsBuildArguments } = await import(pathToFileURL(RUNNER).href);
+    const cacheDir = join(tmpdir(), 'ua-semantic-build-args');
+    const args = semanticFactsBuildArguments(cacheDir, '10.0.100');
+    const expectedProperties = [
+      '-p:TargetFramework=net10.0',
+      `-p:BaseIntermediateOutputPath=${join(cacheDir, 'obj')}/`,
+      `-p:MSBuildProjectExtensionsPath=${join(cacheDir, 'obj')}/`,
+      `-p:RestorePackagesPath=${join(cacheDir, 'packages')}`,
+    ];
+
+    expect(args?.restore[0]).toBe('restore');
+    expect(args?.build[0]).toBe('build');
+    expect(args?.build).toContain('--no-restore');
+    expect(args?.restore.filter((arg) => arg.startsWith('-p:'))).toEqual(expectedProperties);
+    expect(args?.build.filter((arg) => arg.startsWith('-p:'))).toEqual(expectedProperties);
+    expect(semanticFactsBuildArguments(cacheDir, 'invalid')).toBeNull();
+  });
+
   it('unions and deduplicates file dependencies without dropping imports', async () => {
     const { unionFileDependencies } = await import(pathToFileURL(RUNNER).href);
     expect(unionFileDependencies({

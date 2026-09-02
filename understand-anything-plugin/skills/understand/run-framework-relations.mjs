@@ -202,45 +202,50 @@ export function semanticToolCacheDir(uaDir, version) {
   return join(uaDir, 'tmp', 'semantic-facts-csharp', hash);
 }
 
-export function semanticFactsBuildProperties(cacheDir, version) {
+export function semanticFactsBuildArguments(cacheDir, version) {
   const targetFramework = semanticFactsTargetFramework(version);
   if (!targetFramework) return null;
+  const outputDir = join(cacheDir, 'out');
   const intermediateDir = `${join(cacheDir, 'obj')}/`;
-  return [
+  const properties = [
     `-p:TargetFramework=${targetFramework}`,
     `-p:BaseIntermediateOutputPath=${intermediateDir}`,
     `-p:MSBuildProjectExtensionsPath=${intermediateDir}`,
     `-p:RestorePackagesPath=${join(cacheDir, 'packages')}`,
   ];
+  return {
+    outputDir,
+    restore: [
+      'restore', SEMANTIC_FACTS_PROJECT,
+      '--nologo',
+      '--verbosity', 'quiet',
+      ...properties,
+    ],
+    build: [
+      'build', SEMANTIC_FACTS_PROJECT,
+      '--no-restore',
+      '--configuration', 'Release',
+      '--output', outputDir,
+      '--nologo',
+      '--verbosity', 'quiet',
+      ...properties,
+    ],
+  };
 }
 
 function buildSemanticFactsTool(cacheDir, version) {
-  const buildProperties = semanticFactsBuildProperties(cacheDir, version);
-  if (!buildProperties) return null;
-  const outputDir = join(cacheDir, 'out');
-  const toolDll = join(outputDir, 'semantic-facts.dll');
+  const args = semanticFactsBuildArguments(cacheDir, version);
+  if (!args) return null;
+  const toolDll = join(args.outputDir, 'semantic-facts.dll');
   if (existsSync(toolDll)) return toolDll;
   mkdirSync(cacheDir, { recursive: true });
-  const restore = spawnSync('dotnet', [
-    'restore', SEMANTIC_FACTS_PROJECT,
-    '--nologo',
-    '--verbosity', 'quiet',
-    ...buildProperties,
-  ], {
+  const restore = spawnSync('dotnet', args.restore, {
     encoding: 'utf-8',
     timeout: SEMANTIC_FACTS_TIMEOUT_MS,
     windowsHide: true,
   });
   if (restore.status !== 0 || restore.error) return null;
-  const build = spawnSync('dotnet', [
-    'build', SEMANTIC_FACTS_PROJECT,
-    '--no-restore',
-    '--configuration', 'Release',
-    '--output', outputDir,
-    '--nologo',
-    '--verbosity', 'quiet',
-    ...buildProperties,
-  ], {
+  const build = spawnSync('dotnet', args.build, {
     encoding: 'utf-8',
     timeout: SEMANTIC_FACTS_TIMEOUT_MS,
     windowsHide: true,
