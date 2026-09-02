@@ -272,7 +272,15 @@ export function loadCSharpSemanticFacts(scan, root, uaDir, options = {}) {
       windowsHide: true,
     });
     if (result.status !== 0 || result.error) return undefined;
-    return parseCSharpSemanticFactsJson(result.stdout);
+    try {
+      return parseCSharpSemanticFactsJson(result.stdout);
+    } catch (error) {
+      process.stderr.write(
+        `Warning: run-framework-relations: C# semantic facts could not be parsed `
+        + `(${error instanceof Error ? error.message : String(error)})\n`,
+      );
+      return undefined;
+    }
   } catch {
     return undefined;
   }
@@ -339,6 +347,9 @@ export async function run(projectRoot, options = {}) {
       },
     },
   });
+  if (semanticFacts?.warnings.length) {
+    result.warnings.unshift(...semanticFacts.warnings.map((warning) => `csharp semantic facts: ${warning}`));
+  }
 
   mkdirSync(intermediateDir, { recursive: true });
   const expectedArtifacts = new Set();

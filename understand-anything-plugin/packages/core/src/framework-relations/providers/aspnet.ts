@@ -225,7 +225,8 @@ class FactsResolver {
     }
     const semanticMethod = action.semanticMethod;
     const candidates = this.facts.invocations.filter((candidate) =>
-      normalizePath(candidate.projectFile) === action.controller.project.projectFile
+      candidate.containingMethod !== ""
+      && normalizePath(candidate.projectFile) === action.controller.project.projectFile
       && normalizePath(candidate.filePath) === action.controller.file.path
       && candidate.containingType === semanticMethod.containingType
       && candidate.containingMethod === semanticMethod.methodName
