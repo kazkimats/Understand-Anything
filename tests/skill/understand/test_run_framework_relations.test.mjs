@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -128,6 +128,74 @@ public class HomeController : Controller
 }
 
 describe('run-framework-relations.mjs', () => {
+  it('uses the default semantic-facts timeout when the environment value is unset', async () => {
+    const { resolveSemanticFactsTimeoutMs } = await import(pathToFileURL(RUNNER).href);
+
+    expect(resolveSemanticFactsTimeoutMs({})).toBe(120_000);
+  });
+
+  it('accepts a valid semantic-facts timeout from the environment', async () => {
+    const { resolveSemanticFactsTimeoutMs } = await import(pathToFileURL(RUNNER).href);
+
+    expect(resolveSemanticFactsTimeoutMs({
+      UA_CSHARP_SEMANTIC_FACTS_TIMEOUT_MS: '240000',
+    })).toBe(240_000);
+  });
+
+  it('accepts the 1000ms semantic-facts timeout boundary', async () => {
+    const { resolveSemanticFactsTimeoutMs } = await import(pathToFileURL(RUNNER).href);
+
+    expect(resolveSemanticFactsTimeoutMs({
+      UA_CSHARP_SEMANTIC_FACTS_TIMEOUT_MS: '1000',
+    })).toBe(1_000);
+  });
+
+  it('rejects a semantic-facts timeout below 1000ms with a warning', async () => {
+    const { resolveSemanticFactsTimeoutMs } = await import(pathToFileURL(RUNNER).href);
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      expect(resolveSemanticFactsTimeoutMs({
+        UA_CSHARP_SEMANTIC_FACTS_TIMEOUT_MS: '999',
+      })).toBe(120_000);
+      expect(stderr).toHaveBeenCalledWith(expect.stringContaining(
+        'invalid UA_CSHARP_SEMANTIC_FACTS_TIMEOUT_MS "999"',
+      ));
+    } finally {
+      stderr.mockRestore();
+    }
+  });
+
+  it.each(['abc', '0', '-5000'])(
+    'rejects invalid semantic-facts timeout %s with a warning',
+    async (value) => {
+      const { resolveSemanticFactsTimeoutMs } = await import(pathToFileURL(RUNNER).href);
+      const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      try {
+        expect(resolveSemanticFactsTimeoutMs({
+          UA_CSHARP_SEMANTIC_FACTS_TIMEOUT_MS: value,
+        })).toBe(120_000);
+        expect(stderr).toHaveBeenCalledWith(expect.stringContaining(
+          `invalid UA_CSHARP_SEMANTIC_FACTS_TIMEOUT_MS "${value}"`,
+        ));
+      } finally {
+        stderr.mockRestore();
+      }
+    },
+  );
+
+  it('uses the default semantic-facts timeout for an empty value without warning', async () => {
+    const { resolveSemanticFactsTimeoutMs } = await import(pathToFileURL(RUNNER).href);
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      expect(resolveSemanticFactsTimeoutMs({
+        UA_CSHARP_SEMANTIC_FACTS_TIMEOUT_MS: '',
+      })).toBe(120_000);
+      expect(stderr).not.toHaveBeenCalled();
+    } finally {
+      stderr.mockRestore();
+    }
+  });
+
   it('selects the semantic-facts TFM from the detected SDK major', async () => {
     const {
       parseDotnetVersion,
@@ -283,6 +351,56 @@ describe('run-framework-relations.mjs', () => {
         invocationName: 'WriteLine',
       }));
     } finally {
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  }, 90_000);
+
+  it.skipIf(!hasDotnet8)('clamps an invalid environment timeout and loads semantic facts', async () => {
+    const fixture = createRoslynFixture();
+    vi.stubEnv('UA_CSHARP_SEMANTIC_FACTS_TIMEOUT_MS', '1');
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      const { loadCSharpSemanticFacts } = await import(pathToFileURL(RUNNER).href);
+      const facts = loadCSharpSemanticFacts(
+        { files: fixture.files },
+        fixture.root,
+        join(fixture.root, '.ua'),
+        { enabled: true },
+      );
+
+      expect(facts?.schemaVersion).toBe(1);
+      expect(facts?.projects).toContainEqual(expect.objectContaining({
+        projectFile: 'Web/Web.csproj',
+        compilationSucceeded: true,
+      }));
+      expect(stderr).toHaveBeenCalledWith(expect.stringContaining(
+        'invalid UA_CSHARP_SEMANTIC_FACTS_TIMEOUT_MS "1"',
+      ));
+    } finally {
+      stderr.mockRestore();
+      vi.unstubAllEnvs();
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  }, 150_000);
+
+  it.skipIf(!hasDotnet8)('honors a trusted 1ms option and warns on timeout', async () => {
+    const fixture = createRoslynFixture();
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      const { loadCSharpSemanticFacts } = await import(pathToFileURL(RUNNER).href);
+      const facts = loadCSharpSemanticFacts(
+        { files: fixture.files },
+        fixture.root,
+        join(fixture.root, '.ua'),
+        { enabled: true, timeoutMs: 1 },
+      );
+
+      expect(facts).toBeUndefined();
+      expect(stderr).toHaveBeenCalledWith(expect.stringMatching(
+        /timed out after 1ms .*UA_CSHARP_SEMANTIC_FACTS_TIMEOUT_MS/,
+      ));
+    } finally {
+      stderr.mockRestore();
       rmSync(fixture.root, { recursive: true, force: true });
     }
   }, 90_000);
