@@ -279,6 +279,17 @@ Re-read `$UA_DIR/intermediate/scan-result.json` after this command and use its
 canonical, deduplicated `frameworks` array for all later phases. Capture any
 `Warning:` line in `$PHASE_WARNINGS`. A non-zero exit is a hard Phase 1 failure.
 
+Run registered deterministic framework relation providers before batching:
+
+```bash
+node "<SKILL_DIR>/run-framework-relations.mjs" "$PROJECT_ROOT"
+```
+
+This writes common `ua-framework-relations-<framework-id>.json` artifacts and
+unions their `fileDependencies` into `scan-result.json#importMap`, so Phase 1.5
+batching, `neighborMap`, and `batchImportData` all see framework adjacency.
+Provider failures are warnings and do not prevent other providers from running.
+
 **Gate check:** If >100 files, inform the user and suggest scoping with a subdirectory argument. Proceed only if user confirms or add guidance that this may take a while.
 
 If the scan result includes `filteredByIgnore > 0`, report:
@@ -378,6 +389,9 @@ git diff "<lastCommitHash>..HEAD" --name-only > "$UA_DIR/tmp/changed-files.txt"
 
 Run compute-batches with `--changed-files`:
 ```bash
+node "<SKILL_DIR>/run-framework-relations.mjs" "$PROJECT_ROOT" \
+  --changed-files="$UA_DIR/tmp/changed-files.txt"
+
 node "<SKILL_DIR>/compute-batches.mjs" "$PROJECT_ROOT" \
   --changed-files="$UA_DIR/tmp/changed-files.txt"
 ```

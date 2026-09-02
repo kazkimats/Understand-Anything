@@ -107,6 +107,7 @@ export {
   classifyUpdate,
   type UpdateDecision,
 } from "./change-classifier.js";
+export * from "./framework-relations/index.js";
 // Non-code parsers
 export {
   MarkdownParser,

@@ -25,6 +25,10 @@
       "types": "./dist/languages/index.d.ts",
       "default": "./dist/languages/index.js"
     },
+    "./framework-relations": {
+      "types": "./dist/framework-relations/index.d.ts",
+      "default": "./dist/framework-relations/index.js"
+    },
     "./figma": {
       "types": "./dist/figma/index.d.ts",
       "default": "./dist/figma/index.js"
