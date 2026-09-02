@@ -116,7 +116,7 @@ The script:
 | `.tf`, `.tfvars` | `infra` |
 | `.sql`, `.graphql`, `.gql`, `.proto`, `.prisma`, `.csv`, `.tsv` | `data` |
 | `.sh`, `.bash`, `.zsh`, `.ps1`, `.psm1`, `.psd1`, `.bat`, `.cmd` | `script` |
-| `.html`, `.htm`, `.css`, `.scss`, `.sass`, `.less` | `markup` |
+| `.html`, `.htm`, `.cshtml`, `.css`, `.scss`, `.sass`, `.less` | `markup` |
 | Everything else | `code` |
 
 **Priority rule:** most-specific wins. Filename / path rules fire before extension rules — e.g., `docker-compose.yml` is `infra` (not `config`); `.github/workflows/ci.yml` is `infra` (not `config`); `LICENSE` is `code` (not `docs`).

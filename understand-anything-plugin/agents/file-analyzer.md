@@ -166,7 +166,7 @@ For every file in the results (and any skipped files that you can still read), c
 | `data` | `schema` | For GraphQL, Protobuf, Prisma schema definitions |
 | `data` | `endpoint` | For API schema files (OpenAPI, Swagger) |
 | `script` | `file` | Shell scripts (treat like code) |
-| `markup` | `file` | HTML/CSS files (treat like code) |
+| `markup` | `file` | HTML/CSS/Razor files (treat like code) |
 
 **Choosing between infra sub-types:** Use the file's language and path to decide:
 - `service`: Dockerfile, docker-compose.*, K8s manifests

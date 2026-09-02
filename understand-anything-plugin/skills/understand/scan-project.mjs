@@ -134,6 +134,7 @@ const LANGUAGE_BY_EXT = Object.freeze({
   '.sc': 'scala',
   '.sbt': 'scala',
   '.cs': 'csharp',
+  '.cshtml': 'razor',
   '.swift': 'swift',
   '.lua': 'lua',
   // Ruby / PHP
@@ -346,6 +347,7 @@ const CATEGORY_BY_EXT = Object.freeze({
   // markup
   '.html': 'markup',
   '.htm': 'markup',
+  '.cshtml': 'markup',
   '.css': 'markup',
   '.scss': 'markup',
   '.sass': 'markup',

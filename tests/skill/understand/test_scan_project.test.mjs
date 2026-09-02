@@ -186,6 +186,7 @@ describe('scan-project.mjs — language detection', () => {
       'b.htm': '<html></html>\n',
       'c.css': '.a { }\n',
       'd.scss': '$x: 1;\n',
+      'Views/Home/Index.cshtml': '@model UserViewModel\n<h1>Hello</h1>\n',
     });
     const r = runScript(projectRoot);
     expect(r.status).toBe(0);
@@ -193,6 +194,8 @@ describe('scan-project.mjs — language detection', () => {
     expect(byPath(r.output, 'b.htm').language).toBe('html');
     expect(byPath(r.output, 'c.css').language).toBe('css');
     expect(byPath(r.output, 'd.scss').language).toBe('css');
+    expect(byPath(r.output, 'Views/Home/Index.cshtml').language).toBe('razor');
+    expect(byPath(r.output, 'Views/Home/Index.cshtml').fileCategory).toBe('markup');
   });
 
   it('maps configuration formats (YAML, JSON, JSONC, TOML, XML, Markdown) to their language ids', () => {
