@@ -737,6 +737,7 @@ function resolveActionViews(
         source: { nodeKey: actionNodeKey(action) },
         target: { nodeId: `file:${resolved.path}` },
         edgeType: "depends_on",
+        fileProjection: true,
         weight: 1,
         evidence: {
           rule: "aspnet-mvc-view-discovery",
@@ -848,6 +849,7 @@ function resolveActionRedirects(
         source: { nodeKey: actionNodeKey(action) },
         target: { nodeKey: actionNodeKey(target) },
         edgeType: "routes",
+        fileProjection: true,
         weight: 1,
         evidence,
       });
@@ -1233,6 +1235,7 @@ async function resolveRazorTypes(
             nodeId: `class:${resolved.value.path}:${resolved.value.declaration.name}`,
           },
           edgeType: "depends_on",
+          fileProjection: true,
           weight: 1,
           evidence: { rule: `razor-${directive.kind}`, filePath: path, lineRange: [line, line] },
         });
@@ -1390,6 +1393,7 @@ function resolveTagHelpers(
         source: { nodeId: `file:${path}` },
         target: { nodeKey: actionNodeKey(matches[0]) },
         edgeType: "routes",
+        fileProjection: true,
         weight: 1,
         evidence: { rule: "razor-anchor-tag-helper", filePath: path, lineRange: [line, line] },
       });
