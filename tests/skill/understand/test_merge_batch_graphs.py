@@ -90,6 +90,25 @@ def _function_node(path: str, name: str, **extra: Any) -> dict[str, Any]:
     return node
 
 
+def _write_framework_artifact(
+    intermediate: Path,
+    relations: list[dict[str, Any]],
+    nodes: list[dict[str, Any]] | None = None,
+) -> None:
+    artifact = {
+        "schemaVersion": 1,
+        "frameworkId": "fake-framework",
+        "fileDependencies": [],
+        "nodes": nodes or [],
+        "relations": relations,
+        "stats": {},
+        "warnings": [],
+    }
+    (intermediate / "ua-framework-relations-fake-framework.json").write_text(
+        json.dumps(artifact), encoding="utf-8"
+    )
+
+
 class FrameworkRelationMaterializerTests(unittest.TestCase):
     def test_materializes_common_candidates_and_relations_safely(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -206,6 +225,195 @@ class FrameworkRelationMaterializerTests(unittest.TestCase):
     def test_materializer_source_has_no_framework_specific_branch(self) -> None:
         source = _MODULE_PATH.read_text(encoding="utf-8").lower()
         self.assertNotIn("asp" + "net", source)
+
+    def test_projects_cross_file_relations_for_supported_endpoint_shapes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            intermediate = Path(temp)
+            assembled = {
+                "nodes": [
+                    _file_node("source.fake"),
+                    _file_node("view.fake"),
+                    _file_node("target.fake"),
+                    _class_node("target.fake", "Target"),
+                ],
+                "edges": [],
+            }
+            candidates = [
+                {"key": "source", "node": _function_node("source.fake", "source")},
+                {"key": "target", "node": _function_node("target.fake", "target")},
+            ]
+            relations = [
+                {
+                    "kind": "function_file",
+                    "source": {"nodeKey": "source"},
+                    "target": {"nodeId": "file:view.fake"},
+                    "edgeType": "depends_on",
+                    "fileProjection": True,
+                    "evidence": {"rule": "fake-function-file"},
+                },
+                {
+                    "kind": "function_function",
+                    "source": {"nodeKey": "source"},
+                    "target": {"nodeKey": "target"},
+                    "edgeType": "routes",
+                    "fileProjection": True,
+                },
+                {
+                    "kind": "file_class",
+                    "source": {"nodeId": "file:view.fake"},
+                    "target": {"nodeId": "class:target.fake:Target"},
+                    "edgeType": "depends_on",
+                    "fileProjection": {"edgeType": "routes"},
+                },
+            ]
+            _write_framework_artifact(intermediate, relations, candidates)
+
+            stats, _ = mbg.materialize_framework_relations(assembled, intermediate)
+
+            edges = {
+                (edge["source"], edge["target"], edge["type"]): edge
+                for edge in assembled["edges"]
+            }
+            for edge_key in [
+                ("function:source.fake:source", "file:view.fake", "depends_on"),
+                ("file:source.fake", "file:view.fake", "depends_on"),
+                ("function:source.fake:source", "function:target.fake:target", "routes"),
+                ("file:source.fake", "file:target.fake", "routes"),
+                ("file:view.fake", "class:target.fake:Target", "depends_on"),
+                ("file:view.fake", "file:target.fake", "routes"),
+            ]:
+                self.assertIn(edge_key, edges)
+            projected = edges[("file:source.fake", "file:view.fake", "depends_on")]
+            self.assertEqual(projected["frameworkRelation"], "fake-framework")
+            self.assertEqual(projected["weight"], 1.0)
+            self.assertIn("fake-function-file", projected["description"])
+            self.assertEqual(stats["relationsAdded"], 3)
+            self.assertEqual(stats["fileProjectionAdded"], 3)
+
+            persisted = json.loads(
+                (intermediate / "ua-framework-relations-stats.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(persisted["fileProjectionAdded"], 3)
+
+            rerun_stats, _ = mbg.materialize_framework_relations(assembled, intermediate)
+            self.assertEqual(rerun_stats["fileProjectionAdded"], 3)
+            self.assertEqual(sum(
+                edge.get("frameworkRelation") == "fake-framework"
+                and edge.get("source") == "file:source.fake"
+                and edge.get("target") == "file:view.fake"
+                and edge.get("type") == "depends_on"
+                for edge in assembled["edges"]
+            ), 1)
+
+    def test_skips_same_file_and_unrequested_projections(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            intermediate = Path(temp)
+            assembled = {
+                "nodes": [
+                    _file_node("source.fake"),
+                    _file_node("target.fake"),
+                    _function_node("source.fake", "source"),
+                    _class_node("source.fake", "Local"),
+                ],
+                "edges": [],
+            }
+            _write_framework_artifact(intermediate, [
+                {
+                    "kind": "same_file",
+                    "source": {"nodeId": "function:source.fake:source"},
+                    "target": {"nodeId": "class:source.fake:Local"},
+                    "edgeType": "depends_on",
+                    "fileProjection": True,
+                },
+                {
+                    "kind": "not_requested",
+                    "source": {"nodeId": "function:source.fake:source"},
+                    "target": {"nodeId": "file:target.fake"},
+                    "edgeType": "routes",
+                },
+            ])
+
+            stats, _ = mbg.materialize_framework_relations(assembled, intermediate)
+
+            edge_keys = {
+                (edge["source"], edge["target"], edge["type"])
+                for edge in assembled["edges"]
+            }
+            self.assertIn(
+                ("function:source.fake:source", "class:source.fake:Local", "depends_on"),
+                edge_keys,
+            )
+            self.assertIn(
+                ("function:source.fake:source", "file:target.fake", "routes"),
+                edge_keys,
+            )
+            self.assertNotIn(("file:source.fake", "file:source.fake", "depends_on"), edge_keys)
+            self.assertNotIn(("file:source.fake", "file:target.fake", "routes"), edge_keys)
+            self.assertEqual(stats["relationsAdded"], 2)
+            self.assertEqual(stats["fileProjectionAdded"], 0)
+
+    def test_counts_an_existing_projected_edge_as_a_duplicate(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            intermediate = Path(temp)
+            assembled = {
+                "nodes": [
+                    _file_node("source.fake"),
+                    _file_node("target.fake"),
+                    _function_node("source.fake", "source"),
+                ],
+                "edges": [{
+                    "source": "file:source.fake",
+                    "target": "file:target.fake",
+                    "type": "depends_on",
+                }],
+            }
+            _write_framework_artifact(intermediate, [{
+                "kind": "duplicate_projection",
+                "source": {"nodeId": "function:source.fake:source"},
+                "target": {"nodeId": "file:target.fake"},
+                "edgeType": "depends_on",
+                "fileProjection": True,
+            }])
+
+            stats, _ = mbg.materialize_framework_relations(assembled, intermediate)
+
+            self.assertEqual(stats["relationsAdded"], 1)
+            self.assertEqual(stats["fileProjectionAdded"], 0)
+            self.assertEqual(stats["duplicateRelation"], 1)
+
+    def test_keeps_symbol_edge_when_a_projected_file_node_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            intermediate = Path(temp)
+            assembled = {
+                "nodes": [
+                    _file_node("source.fake"),
+                    _function_node("source.fake", "source"),
+                    _class_node("missing-file.fake", "Target"),
+                ],
+                "edges": [],
+            }
+            _write_framework_artifact(intermediate, [{
+                "kind": "missing_projected_file",
+                "source": {"nodeId": "function:source.fake:source"},
+                "target": {"nodeId": "class:missing-file.fake:Target"},
+                "edgeType": "depends_on",
+                "fileProjection": True,
+            }])
+
+            stats, _ = mbg.materialize_framework_relations(assembled, intermediate)
+
+            edge_keys = {
+                (edge["source"], edge["target"], edge["type"])
+                for edge in assembled["edges"]
+            }
+            self.assertIn((
+                "function:source.fake:source",
+                "class:missing-file.fake:Target",
+                "depends_on",
+            ), edge_keys)
+            self.assertEqual(stats["relationsAdded"], 1)
+            self.assertEqual(stats["fileProjectionAdded"], 0)
+            self.assertEqual(stats["fileProjectionMissingFile"], 1)
 
 
 # ── is_test_path ──────────────────────────────────────────────────────────

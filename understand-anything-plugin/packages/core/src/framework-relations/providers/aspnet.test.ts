@@ -124,11 +124,14 @@ public class HomeController : Controller {
     const targets = result.fileDependencies
       .filter((dependency) => dependency.kind === "action_view")
       .map((dependency) => dependency.targetPath);
+    const relations = result.relations.filter((relation) => relation.kind === "action_view");
 
     expect(targets).toEqual([
       "Web/Views/Home/Index.cshtml",
       "Web/Views/Home/Detail.cshtml",
     ]);
+    expect(relations).not.toHaveLength(0);
+    expect(relations.every((relation) => relation.fileProjection === true)).toBe(true);
     expect(result.stats.actionViewCandidates).toBe(4);
     expect(result.stats.actionViewsResolved).toBe(3);
     expect(result.stats.actionViewsModelFallback).toBe(0);
@@ -281,6 +284,8 @@ describe("aspnetProvider Razor and routing conventions", () => {
     const partials = result.fileDependencies.filter((dependency) =>
       dependency.kind === "view_partial");
     const layouts = result.relations.filter((relation) => relation.kind === "view_layout");
+    const viewFileRelations = result.relations.filter((relation) =>
+      relation.kind === "view_partial" || relation.kind === "view_layout");
 
     expect(partials.map((dependency) => dependency.targetPath)).toEqual([
       "Web/Areas/Admin/Views/Home/_AreaPartial.cshtml",
@@ -303,6 +308,8 @@ describe("aspnetProvider Razor and routing conventions", () => {
       }),
     ]));
     expect(layouts).toHaveLength(2);
+    expect(viewFileRelations).not.toHaveLength(0);
+    expect(viewFileRelations.every((relation) => relation.fileProjection === undefined)).toBe(true);
     expect(layouts.some((relation) =>
       "nodeId" in relation.source
       && relation.source.nodeId.endsWith("/Variable.cshtml"))).toBe(false);
@@ -329,6 +336,102 @@ describe("aspnetProvider Razor and routing conventions", () => {
       dependency.kind === "action_redirect")).toEqual([]);
   });
 
+  it("requests file projection for cross-controller action redirects", async () => {
+    const homePath = "Web/Controllers/HomeController.cs";
+    const otherPath = "Web/Controllers/OtherController.cs";
+    const files = {
+      "Web/Web.csproj": webProject,
+      [homePath]: `public class HomeController : Controller {
+  public IActionResult Go() => RedirectToAction("Index", "Other");
+}`,
+      [otherPath]: `public class OtherController : Controller {
+  public IActionResult Index() => Ok();
+}`,
+    };
+    const semanticFacts: CSharpSemanticFacts = {
+      schemaVersion: 1,
+      projects: [{
+        projectFile: "Web/Web.csproj",
+        compilationSucceeded: true,
+        targetFrameworks: ["net8.0"],
+        references: ["Microsoft.AspNetCore.Mvc.Core"],
+        referencesResolved: true,
+      }],
+      types: [
+        {
+          projectFile: "Web/Web.csproj",
+          symbolName: "Web.HomeController",
+          kind: "class",
+          filePath: homePath,
+          lineRange: [1, 3],
+          baseTypes: [{
+            symbolName: "Microsoft.AspNetCore.Mvc.Controller",
+            kind: "class",
+            resolvedOutsideProject: true,
+          }],
+          attributes: [],
+        },
+        {
+          projectFile: "Web/Web.csproj",
+          symbolName: "Web.OtherController",
+          kind: "class",
+          filePath: otherPath,
+          lineRange: [1, 3],
+          baseTypes: [{
+            symbolName: "Microsoft.AspNetCore.Mvc.Controller",
+            kind: "class",
+            resolvedOutsideProject: true,
+          }],
+          attributes: [],
+        },
+      ],
+      methods: [
+        {
+          projectFile: "Web/Web.csproj",
+          containingType: "Web.HomeController",
+          methodName: "Go",
+          kind: "method",
+          filePath: homePath,
+          lineRange: [2, 2],
+          modifiers: ["public", "instance"],
+          isConstructor: false,
+          attributes: [],
+        },
+        {
+          projectFile: "Web/Web.csproj",
+          containingType: "Web.OtherController",
+          methodName: "Index",
+          kind: "method",
+          filePath: otherPath,
+          lineRange: [2, 2],
+          modifiers: ["public", "instance"],
+          isConstructor: false,
+          attributes: [],
+        },
+      ],
+      invocations: [{
+        projectFile: "Web/Web.csproj",
+        containingType: "Web.HomeController",
+        containingMethod: "Go",
+        invocationName: "RedirectToAction",
+        symbolName: "Microsoft.AspNetCore.Mvc.ControllerBase.RedirectToAction(string,string)",
+        filePath: homePath,
+        lineRange: [2, 2],
+        arguments: ["\"Index\"", "\"Other\""],
+        targetKind: "instance-method",
+        resolved: true,
+      }],
+      diagnostics: [],
+      warnings: [],
+    };
+
+    const result = await aspnetProvider.analyze(context(files, semanticFacts));
+    const redirects = result.relations.filter((relation) => relation.kind === "action_redirect");
+
+    expect(redirects).toHaveLength(1);
+    expect(redirects[0].fileProjection).toBe(true);
+  });
+
   it("resolves Razor model/inject types and skips ambiguous or cross-project types", async () => {
     const files = {
       "Web/Web.csproj": webProject,
@@ -353,6 +456,8 @@ public class PagedResult<T> { }`,
     const result = await aspnetProvider.analyze(context(files));
     const dependencies = result.fileDependencies.filter((dependency) =>
       dependency.kind === "view_model" || dependency.kind === "view_inject");
+    const relations = result.relations.filter((relation) =>
+      relation.kind === "view_model" || relation.kind === "view_inject");
 
     expect(dependencies).toEqual(expect.arrayContaining([
       expect.objectContaining({
@@ -371,6 +476,8 @@ public class PagedResult<T> { }`,
         kind: "view_model",
       }),
     ]));
+    expect(relations).not.toHaveLength(0);
+    expect(relations.every((relation) => relation.fileProjection === true)).toBe(true);
     expect(result.stats.razorInjectsResolved).toBe(1);
     expect(result.stats.razorModelsAmbiguous).toBe(1);
     expect(result.stats.razorViewsScanned).toBe(5);
@@ -418,6 +525,79 @@ app.MapAreaControllerRoute(name: "areas", areaName: "Admin", pattern: "{area:exi
     expect(result.stats.conventionalRoutesObserved).toBe(2);
     expect(result.stats.tagHelperLinksResolved).toBe(2);
     expect(routeRelations).toHaveLength(5);
+    expect(result.relations.filter((relation) => relation.kind === "route_handler")
+      .every((relation) => relation.fileProjection === undefined)).toBe(true);
+    expect(result.relations.filter((relation) => relation.kind === "template_link")
+      .every((relation) => relation.fileProjection === true)).toBe(true);
+  });
+
+  it("does not request projections for file-to-file registrations", async () => {
+    const programPath = "Web/Program.cs";
+    const files = {
+      "Web/Web.csproj": webProject,
+      [programPath]: `options.Filters.Add<GlobalFilter>();
+app.UseMiddleware<ExceptionMiddleware>();
+services.AddScoped<IFoo, FooImpl>();`,
+      "Web/Filters/GlobalFilter.cs": "public class GlobalFilter { }",
+      "Web/Middleware/ExceptionMiddleware.cs": "public class ExceptionMiddleware { }",
+      "Web/Services/FooImpl.cs": "public class FooImpl { }",
+    };
+    const semanticFacts: CSharpSemanticFacts = {
+      schemaVersion: 1,
+      projects: [{
+        projectFile: "Web/Web.csproj",
+        compilationSucceeded: true,
+        targetFrameworks: ["net8.0"],
+        references: ["Microsoft.AspNetCore.Mvc.Core"],
+        referencesResolved: true,
+      }],
+      types: [
+        ["GlobalFilter", "Web/Filters/GlobalFilter.cs"],
+        ["ExceptionMiddleware", "Web/Middleware/ExceptionMiddleware.cs"],
+        ["FooImpl", "Web/Services/FooImpl.cs"],
+      ].map(([symbolName, filePath]) => ({
+        projectFile: "Web/Web.csproj",
+        symbolName,
+        kind: "class",
+        filePath,
+        lineRange: [1, 1],
+        baseTypes: [],
+        attributes: [],
+      })),
+      methods: [],
+      invocations: [
+        ["Add", "Options.Filters.Add<GlobalFilter>()", 1, []],
+        ["UseMiddleware", "UseMiddleware<ExceptionMiddleware>()", 2, []],
+        ["AddScoped", "AddScoped<IFoo,FooImpl>()", 3, ["IFoo", "FooImpl"]],
+      ].map(([invocationName, symbolName, line, invocationArguments]) => ({
+        projectFile: "Web/Web.csproj",
+        containingType: "Program",
+        containingMethod: "top-level",
+        invocationName: invocationName as string,
+        symbolName: symbolName as string,
+        filePath: programPath,
+        lineRange: [line as number, line as number] as [number, number],
+        arguments: invocationArguments as string[],
+        targetKind: "extension" as const,
+        resolved: true,
+      })),
+      diagnostics: [],
+      warnings: [],
+    };
+
+    const result = await aspnetProvider.analyze(context(files, semanticFacts));
+    const registrations = result.relations.filter((relation) => [
+      "global_filter_registration",
+      "middleware_registration",
+      "di_registration",
+    ].includes(relation.kind));
+
+    expect(registrations.map((relation) => relation.kind)).toEqual([
+      "global_filter_registration",
+      "middleware_registration",
+      "di_registration",
+    ]);
+    expect(registrations.every((relation) => relation.fileProjection === undefined)).toBe(true);
   });
 });
 
