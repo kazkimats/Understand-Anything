@@ -61,6 +61,12 @@ export interface FrameworkRelation {
   edgeType: EdgeType;
   weight?: number;
   evidence?: FrameworkEvidence;
+  /**
+   * Optional file-level projection: additionally materialize an edge between
+   * the files that own the two endpoints. `true` uses this relation's edge
+   * type; an object supplies an explicit projected edge type.
+   */
+  fileProjection?: { edgeType: EdgeType } | true;
 }
 
 export interface FrameworkRelationResult {
@@ -112,6 +118,10 @@ export const FrameworkRelationArtifactSchema = z.object({
     edgeType: EdgeTypeSchema,
     weight: z.number().min(0).max(1).optional(),
     evidence: EvidenceSchema.optional(),
+    fileProjection: z.union([
+      z.object({ edgeType: EdgeTypeSchema }).strict(),
+      z.literal(true),
+    ]).optional(),
   })),
   stats: z.record(z.string(), z.number()),
   warnings: z.array(z.string()),

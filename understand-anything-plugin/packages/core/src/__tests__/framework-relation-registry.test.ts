@@ -214,9 +214,42 @@ describe("validateFrameworkRelationArtifact", () => {
         source: { nodeKey: "endpoint" },
         target: { nodeId: "func:handler" },
         edgeType: "routes",
+        fileProjection: true,
       }],
       stats: {},
       warnings: [],
     }).frameworkId).toBe("fake");
+  });
+
+  it("accepts a strict file projection override and rejects invalid shapes", () => {
+    const artifact = {
+      schemaVersion: 1 as const,
+      frameworkId: "fake",
+      fileDependencies: [],
+      nodes: [],
+      relations: [{
+        kind: "fake_route",
+        source: { nodeId: "file:routes.fake" },
+        target: { nodeId: "file:handler.fake" },
+        edgeType: "routes",
+        fileProjection: { edgeType: "depends_on" },
+      }],
+      stats: {},
+      warnings: [],
+    };
+
+    expect(validateFrameworkRelationArtifact(artifact).relations[0].fileProjection)
+      .toEqual({ edgeType: "depends_on" });
+    expect(() => validateFrameworkRelationArtifact({
+      ...artifact,
+      relations: [{ ...artifact.relations[0], fileProjection: false }],
+    })).toThrow();
+    expect(() => validateFrameworkRelationArtifact({
+      ...artifact,
+      relations: [{
+        ...artifact.relations[0],
+        fileProjection: { edgeType: "depends_on", unexpected: true },
+      }],
+    })).toThrow();
   });
 });
