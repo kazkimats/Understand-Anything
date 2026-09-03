@@ -1984,6 +1984,25 @@ def _framework_ref_id(ref: Any, node_keys: dict[str, str]) -> str | None:
     return None
 
 
+def _framework_node_file_path(
+    node_id: str,
+    nodes_by_id: dict[str, dict[str, Any]],
+) -> str | None:
+    node = nodes_by_id.get(node_id)
+    if node is not None:
+        file_path = node.get("filePath")
+        if isinstance(file_path, str) and file_path:
+            return file_path
+    if node_id.startswith("file:"):
+        file_path = node_id[len("file:"):]
+        return file_path or None
+    for prefix in ("function:", "class:"):
+        if node_id.startswith(prefix):
+            file_path, separator, _ = node_id[len(prefix):].rpartition(":")
+            return file_path if separator and file_path else None
+    return None
+
+
 def materialize_framework_relations(
     assembled: dict[str, Any],
     intermediate_dir: Path,
@@ -1997,6 +2016,8 @@ def materialize_framework_relations(
         "missingEndpoint": 0,
         "invalidRelation": 0,
         "duplicateRelation": 0,
+        "fileProjectionAdded": 0,
+        "fileProjectionMissingFile": 0,
         "containsAdded": 0,
         "artifactsLoaded": 0,
         "artifactsInvalid": 0,
@@ -2010,6 +2031,10 @@ def materialize_framework_relations(
     ]
     node_ids = {
         node.get("id") for node in assembled.get("nodes", [])
+        if isinstance(node, dict) and isinstance(node.get("id"), str)
+    }
+    nodes_by_id = {
+        node["id"]: node for node in assembled.get("nodes", [])
         if isinstance(node, dict) and isinstance(node.get("id"), str)
     }
     edge_keys = {
@@ -2058,6 +2083,7 @@ def materialize_framework_relations(
             candidate_node["id"] = _framework_node_id(candidate_node["id"])
             node_id = candidate_node["id"]
             node_keys[key] = node_id
+            nodes_by_id[node_id] = candidate_node
             live_candidate_ids.add(node_id)
             if node_id in node_ids:
                 continue
@@ -2105,22 +2131,67 @@ def materialize_framework_relations(
             edge_key = (source, target, edge_type)
             if edge_key in edge_keys:
                 stats["duplicateRelation"] += 1
+            evidence = relation.get("evidence")
+            if edge_key not in edge_keys:
+                edge = {
+                    "source": source,
+                    "target": target,
+                    "type": edge_type,
+                    "direction": "forward",
+                    "weight": float(weight),
+                    "deterministic": True,
+                    "frameworkRelation": artifact["frameworkId"],
+                }
+                if isinstance(evidence, dict) and isinstance(evidence.get("rule"), str):
+                    edge["description"] = f"Deterministic framework rule: {evidence['rule']}"
+                assembled["edges"].append(edge)
+                edge_keys.add(edge_key)
+                stats["relationsAdded"] += 1
+
+            projection = relation.get("fileProjection")
+            if projection is None:
                 continue
-            edge = {
-                "source": source,
-                "target": target,
-                "type": edge_type,
+            projected_edge_type = (
+                edge_type if projection is True
+                else projection.get("edgeType") if isinstance(projection, dict)
+                else None
+            )
+            if projected_edge_type not in FRAMEWORK_EDGE_TYPES:
+                stats["invalidRelation"] += 1
+                continue
+            source_path = _framework_node_file_path(source, nodes_by_id)
+            target_path = _framework_node_file_path(target, nodes_by_id)
+            if source_path == target_path and source_path is not None:
+                continue
+            if source_path is None or target_path is None:
+                stats["fileProjectionMissingFile"] += 1
+                continue
+            projected_source = f"file:{source_path}"
+            projected_target = f"file:{target_path}"
+            if projected_source not in node_ids or projected_target not in node_ids:
+                stats["fileProjectionMissingFile"] += 1
+                continue
+            projected_key = (projected_source, projected_target, projected_edge_type)
+            if projected_key in edge_keys:
+                stats["duplicateRelation"] += 1
+                continue
+            projected_edge = {
+                "source": projected_source,
+                "target": projected_target,
+                "type": projected_edge_type,
                 "direction": "forward",
-                "weight": float(weight),
+                "weight": 1.0,
                 "deterministic": True,
                 "frameworkRelation": artifact["frameworkId"],
             }
-            evidence = relation.get("evidence")
             if isinstance(evidence, dict) and isinstance(evidence.get("rule"), str):
-                edge["description"] = f"Deterministic framework rule: {evidence['rule']}"
-            assembled["edges"].append(edge)
-            edge_keys.add(edge_key)
-            stats["relationsAdded"] += 1
+                projected_edge["description"] = (
+                    "Deterministic framework rule (file projection): "
+                    f"{evidence['rule']}"
+                )
+            assembled["edges"].append(projected_edge)
+            edge_keys.add(projected_key)
+            stats["fileProjectionAdded"] += 1
 
     stale_node_ids = {
         node.get("id") for node in assembled.get("nodes", [])
@@ -2154,6 +2225,7 @@ def materialize_framework_relations(
     for key in (
         "nodesRequested", "nodesMaterialized", "relationsRequested", "relationsAdded",
         "missingEndpoint", "invalidRelation", "duplicateRelation",
+        "fileProjectionAdded",
     ):
         generic_stats[key] = stats[key]
     try:
@@ -2170,6 +2242,8 @@ def materialize_framework_relations(
         f"  missing endpoints: {stats['missingEndpoint']}",
         f"  invalid relations: {stats['invalidRelation']}",
         f"  duplicate relations: {stats['duplicateRelation']}",
+        f"  file projections added: {stats['fileProjectionAdded']}",
+        f"  file projections missing files: {stats['fileProjectionMissingFile']}",
     ]
     return stats, warnings + lines
 
