@@ -32,6 +32,14 @@
 - Literal Anchor Tag Helper values (`asp-area`, `asp-controller`, `asp-action`) route a Razor view to a uniquely resolved action. Skip dynamic values.
 - Use deterministic C# dependency edges when available; do not infer a concrete implementation from naming alone.
 
+### Symbol and File Edge Projection
+
+Framework relations use a two-layer graph model. The provider always emits the precise symbol-level relation, such as an action function depending on a Razor view file. A relation may also set `fileProjection: true` to request a companion edge between the existing file nodes that own both endpoints. The projected edge keeps the relation's edge type and rule evidence. The generic materializer skips the companion when both endpoints belong to the same file or either file node is unavailable. A `{ edgeType }` projection may override the companion type when another framework needs that distinction.
+
+ASP.NET requests file projection for cross-file `action_view`, `action_redirect`, `view_model`, `view_inject`, and `template_link` relations. It does not request projection for `view_partial`, `view_layout`, `global_filter_registration`, `middleware_registration`, or `di_registration`, because those relations already connect file nodes. `route_handler` also remains symbol-only because its endpoint and action belong to the same controller file.
+
+`fileDependencies` remain unchanged and continue to feed `scan.importMap` for batching, Louvain community detection, and later `imports` recovery. File projection is the graph-edge counterpart: it preserves the framework relation's semantic edge type (`depends_on`, `routes`, `configures`, or `middleware`) and its rule evidence. An `imports` edge and a projected edge between the same files are distinct unless their edge types are identical.
+
 ### Provider Layering Boundary
 
 The ASP.NET provider owns framework conventions only. Constructor injection from primary or normal constructors and instance fields, plus `implements` / `inherits` relationships, belong to the common deterministic C# layer. Do not reproduce those relationships in this provider. Prefer no edge when a view, action, or registration type is unresolved or ambiguous.
